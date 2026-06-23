@@ -17,7 +17,8 @@ struct AdcScopeData {
     bool running = false;
     bool healthy = false;
     bool bitbang = false;
-    uint32_t sample_rate_hz = 8000; // complete two-channel frames per second
+    uint32_t sample_rate_hz = 8000; // requested/nominal complete two-channel frames per second
+    uint32_t measured_sample_rate_hz = 8000; // measured effective ring-buffer frame rate
     std::array<uint16_t, 2> latest_raw{{0, 0}};
     std::array<double, 2> latest_volts{{0.0, 0.0}};
     uint64_t total_frames = 0;
@@ -48,10 +49,12 @@ public:
 
     bool isEnabled() const;
     AdcScopeData snapshot(size_t max_points = 1600) const;
+    AdcScopeData recent(size_t frames) const;
 
 private:
     void worker();
     std::vector<uint16_t> copyRecentLocked(int channel, size_t max_points) const;
+    std::vector<uint16_t> copyRecentExactLocked(int channel, size_t frames) const;
 
     Config config_;
     mutable std::mutex mtx_;
@@ -61,6 +64,9 @@ private:
     std::array<uint16_t, 2> latest_raw_{{0, 0}};
     uint64_t total_frames_ = 0;
     uint64_t dropped_reads_ = 0;
+    uint32_t measured_sample_rate_hz_ = 0;
+    std::chrono::steady_clock::time_point first_sample_time_{};
+    std::chrono::steady_clock::time_point last_sample_time_{};
     bool healthy_ = false;
     std::string last_error_;
 

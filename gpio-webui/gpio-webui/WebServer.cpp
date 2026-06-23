@@ -6,6 +6,10 @@
 #include <cstdlib>
 #include <string>
 #include <utility>
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cmath>
 
 using json = nlohmann::json;
 
@@ -22,6 +26,7 @@ const char* HTML_UI = R"html(
         .subtitle { color: #888; margin-bottom: 30px; font-size: 0.9rem; }
         .config-panel { background: #1e1e1e; padding: 15px 25px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); display: flex; align-items: center; gap: 15px; flex-wrap: wrap; }
         .config-panel input { background: #2a2a2a; border: 1px solid #444; color: #fff; padding: 8px; border-radius: 5px; width: 80px; text-align: center; }
+        .config-panel input.wide { width: 110px; }
         .config-panel button { background: #00adb5; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; transition: 0.2s; }
         .config-panel button:hover { background: #00f5ff; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; width: 100%; max-width: 1200px; }
@@ -38,6 +43,10 @@ const char* HTML_UI = R"html(
         .controls { margin-top: auto; display: flex; flex-direction: column; gap: 10px; border-top: 1px solid #333; padding-top: 15px; }
         .control-row { display: flex; justify-content: space-between; align-items: center; }
         select, button.action-btn { background: #2a2a2a; color: #fff; border: 1px solid #444; padding: 6px 12px; border-radius: 5px; cursor: pointer; }
+        .record-panel { justify-content: flex-start; margin-top: 14px; margin-bottom: 0; padding: 12px 14px; }
+        .record-panel select { min-width: 170px; }
+        .record-help { color: #9aa; font-size: .82rem; }
+        .record-status { color: #8df7ff; font-size: .85rem; min-width: 160px; }
         button.action-btn.active-high { background: #00ff87; color: #000; font-weight: bold; }
         button.action-btn.active-low { background: #ff4141; color: #fff; font-weight: bold; }
         .io-badge { padding: 4px 8px; border-radius: 5px; font-size: 0.8rem; font-weight: bold; }
@@ -82,6 +91,20 @@ const char* HTML_UI = R"html(
             <span id="adcErr" style="color:#ff8a80"></span>
         </div>
         <div class="scope-wrap"><canvas id="adcScope" width="1200" height="220"></canvas></div>
+        <div class="config-panel record-panel">
+            <label for="wavDuration">WAV capture:</label>
+            <input class="wide" type="number" id="wavDuration" min="1" max="600000" step="100" value="1000">
+            <span>ms</span>
+            <select id="wavMode">
+                <option value="ch0">Mono CH0</option>
+                <option value="ch1">Mono CH1</option>
+                <option value="stereo">Stereo CH0 + CH1</option>
+                <option value="mix">Mono mix CH0 + CH1</option>
+            </select>
+            <button onclick="downloadWav()">Download WAV</button>
+            <span class="record-status" id="wavStatus"></span>
+            <span class="record-help">Downloads the newest n ms already held in the ADC ring buffer as 16-bit PCM.</span>
+        </div>
         <div class="tiny"><span style="color:#00ff87">CH0 is green</span>, <span style="color:#ffcf33">CH1 is amber</span>. The scope endpoint returns recent ring-buffer history with min/max decimation so audio peaks remain visible while the browser polls at UI speed.</div>
     </div>
 
@@ -204,7 +227,9 @@ const char* HTML_UI = R"html(
             status.textContent = data.enabled ? (data.healthy ? 'ADC OK' : 'ADC FAULT') : 'ADC DISABLED';
             status.className = `status-pill ${data.healthy ? 'status-ok' : 'status-bad'}`;
             document.getElementById('adcMode').textContent = data.bitbang ? 'bitbang GPIO' : 'hardware SPI';
-            document.getElementById('adcRate').textContent = data.sample_rate_hz ? `${data.sample_rate_hz} Hz` : '-';
+            const nominalRate = data.sample_rate_hz || 0;
+            const measuredRate = data.measured_sample_rate_hz || nominalRate;
+            document.getElementById('adcRate').textContent = nominalRate ? `${measuredRate} Hz actual (${nominalRate} Hz requested)` : '-';
             const raw = data.latest_raw || [0, 0];
             const volts = data.latest_volts || [0, 0];
             document.getElementById('adcLatest0').textContent = `${raw[0] ?? 0} (${(volts[0] ?? 0).toFixed(3)} V)`;
@@ -283,6 +308,39 @@ const char* HTML_UI = R"html(
             fetchStatus();
         }
 
+        async function downloadWav() {
+            const durInput = document.getElementById('wavDuration');
+            const modeSelect = document.getElementById('wavMode');
+            const status = document.getElementById('wavStatus');
+            const ms = Math.max(1, Math.min(600000, parseInt(durInput.value || '1000', 10)));
+            durInput.value = ms;
+            const mode = modeSelect.value;
+            status.textContent = 'Preparing download...';
+            try {
+                const res = await fetch(`/api/adc/wav?ms=${encodeURIComponent(ms)}&mode=${encodeURIComponent(mode)}`);
+                if (!res.ok) {
+                    let msg = `HTTP ${res.status}`;
+                    try { const j = await res.json(); msg = j.error || msg; } catch (_) {}
+                    throw new Error(msg);
+                }
+                const blob = await res.blob();
+                const cd = res.headers.get('Content-Disposition') || '';
+                const m = cd.match(/filename="?([^";]+)"?/i);
+                const filename = m ? m[1] : `mcp3202_${mode}_${ms}ms.wav`;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+                status.textContent = `Downloaded ${filename}`;
+            } catch (err) {
+                status.textContent = `Download failed: ${err.message || err}`;
+            }
+        }
+
         async function updateTimeout() {
             const val = document.getElementById('timeoutInput').value;
             const params = new URLSearchParams();
@@ -344,6 +402,35 @@ void WebServer::setup_routes() {
             points = std::max<size_t>(100, std::min<size_t>(5000, std::strtoul(req.get_param_value("points").c_str(), nullptr, 10)));
         }
         res.set_content(serialize_adc_scope(points), "application/json");
+    });
+
+    svr.Get("/api/adc/wav", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!adc_sampler || !adc_sampler->isEnabled()) {
+            res.status = 404;
+            res.set_content("{\"status\":\"error\",\"error\":\"ADC/graph disabled in GPIO-only mode\"}", "application/json");
+            return;
+        }
+
+        size_t duration_ms = 1000;
+        if (req.has_param("ms")) {
+            duration_ms = std::strtoul(req.get_param_value("ms").c_str(), nullptr, 10);
+        } else if (req.has_param("duration_ms")) {
+            duration_ms = std::strtoul(req.get_param_value("duration_ms").c_str(), nullptr, 10);
+        }
+        duration_ms = std::max<size_t>(1, std::min<size_t>(600000, duration_ms));
+
+        std::string mode = req.has_param("mode") ? req.get_param_value("mode") : "ch0";
+        std::string filename;
+        try {
+            std::string wav = build_adc_wav(mode, duration_ms, filename);
+            res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+            res.set_header("Cache-Control", "no-store");
+            res.set_content(wav.data(), wav.size(), "audio/wav");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j = {{"status", "error"}, {"error", e.what()}};
+            res.set_content(j.dump(), "application/json");
+        }
     });
 
     svr.Post("/api/config", [this](const httplib::Request& req, httplib::Response& res) {
@@ -413,7 +500,7 @@ std::string WebServer::serialize_adc_scope(size_t max_points) {
     if (!adc_sampler) {
         j = {
             {"enabled", false}, {"running", false}, {"healthy", false}, {"bitbang", false},
-            {"sample_rate_hz", 0}, {"latest_raw", {0, 0}},
+            {"sample_rate_hz", 0}, {"measured_sample_rate_hz", 0}, {"latest_raw", {0, 0}},
             {"latest_volts", {0.0, 0.0}}, {"total_frames", 0}, {"dropped_reads", 0},
             {"last_error", "ADC sampler not configured"},
             {"samples", {{"ch0", json::array()}, {"ch1", json::array()}}}
@@ -427,6 +514,7 @@ std::string WebServer::serialize_adc_scope(size_t max_points) {
     j["healthy"] = s.healthy;
     j["bitbang"] = s.bitbang;
     j["sample_rate_hz"] = s.sample_rate_hz;
+    j["measured_sample_rate_hz"] = s.measured_sample_rate_hz;
     j["latest_raw"] = {s.latest_raw[0], s.latest_raw[1]};
     j["latest_volts"] = {s.latest_volts[0], s.latest_volts[1]};
     j["total_frames"] = s.total_frames;
@@ -437,6 +525,93 @@ std::string WebServer::serialize_adc_scope(size_t max_points) {
         {"ch1", s.samples[1]}
     };
     return j.dump();
+}
+
+std::string WebServer::build_adc_wav(const std::string& mode, size_t duration_ms, std::string& filename) {
+    if (!adc_sampler) throw std::runtime_error("ADC sampler not configured");
+
+    const auto meta = adc_sampler->snapshot(1);
+    const uint32_t sample_rate = std::max<uint32_t>(1, meta.measured_sample_rate_hz ? meta.measured_sample_rate_hz : meta.sample_rate_hz);
+    // Duration selects how much ring-buffer history to copy. Use the measured rate so the downloaded WAV
+    // has both the requested duration and the correct playback pitch even if Linux can't hit the requested rate exactly.
+    const size_t requested_frames = std::max<size_t>(1, (static_cast<uint64_t>(sample_rate) * duration_ms + 999) / 1000);
+    const auto data = adc_sampler->recent(requested_frames);
+    const size_t frames = std::min(data.samples[0].size(), data.samples[1].size());
+    if (frames == 0) throw std::runtime_error("No ADC samples available yet");
+
+    enum class WavMode { Ch0, Ch1, Stereo, Mix };
+    WavMode wav_mode;
+    std::string safe_mode;
+    if (mode == "ch0" || mode == "mono-ch0") { wav_mode = WavMode::Ch0; safe_mode = "ch0"; }
+    else if (mode == "ch1" || mode == "mono-ch1") { wav_mode = WavMode::Ch1; safe_mode = "ch1"; }
+    else if (mode == "stereo" || mode == "ch0ch1") { wav_mode = WavMode::Stereo; safe_mode = "stereo"; }
+    else if (mode == "mix" || mode == "mono-mix") { wav_mode = WavMode::Mix; safe_mode = "mix"; }
+    else throw std::runtime_error("Invalid WAV mode; use ch0, ch1, stereo, or mix");
+
+    const uint16_t channels = (wav_mode == WavMode::Stereo) ? 2 : 1;
+    const uint16_t bits_per_sample = 16;
+    const uint16_t block_align = channels * (bits_per_sample / 8);
+    const uint32_t byte_rate = sample_rate * block_align;
+    const uint32_t data_bytes = static_cast<uint32_t>(frames * block_align);
+    const uint32_t riff_size = 36 + data_bytes;
+
+    auto pcm16 = [](uint16_t raw) -> int16_t {
+        const int32_t centered = static_cast<int32_t>(std::max<uint16_t>(0, std::min<uint16_t>(4095, raw))) - 2048;
+        return static_cast<int16_t>(std::max<int32_t>(-32768, std::min<int32_t>(32767, centered * 16)));
+    };
+    auto append_u16 = [](std::string& s, uint16_t v) {
+        s.push_back(static_cast<char>(v & 0xff));
+        s.push_back(static_cast<char>((v >> 8) & 0xff));
+    };
+    auto append_u32 = [](std::string& s, uint32_t v) {
+        s.push_back(static_cast<char>(v & 0xff));
+        s.push_back(static_cast<char>((v >> 8) & 0xff));
+        s.push_back(static_cast<char>((v >> 16) & 0xff));
+        s.push_back(static_cast<char>((v >> 24) & 0xff));
+    };
+    auto append_i16 = [&](std::string& s, int16_t v) {
+        append_u16(s, static_cast<uint16_t>(v));
+    };
+
+    std::string wav;
+    wav.reserve(44 + data_bytes);
+    wav.append("RIFF", 4);
+    append_u32(wav, riff_size);
+    wav.append("WAVE", 4);
+    wav.append("fmt ", 4);
+    append_u32(wav, 16);                 // PCM fmt chunk size
+    append_u16(wav, 1);                  // PCM format
+    append_u16(wav, channels);
+    append_u32(wav, sample_rate);
+    append_u32(wav, byte_rate);
+    append_u16(wav, block_align);
+    append_u16(wav, bits_per_sample);
+    wav.append("data", 4);
+    append_u32(wav, data_bytes);
+
+    for (size_t i = 0; i < frames; ++i) {
+        const int16_t ch0 = pcm16(data.samples[0][i]);
+        const int16_t ch1 = pcm16(data.samples[1][i]);
+        switch (wav_mode) {
+            case WavMode::Ch0:
+                append_i16(wav, ch0);
+                break;
+            case WavMode::Ch1:
+                append_i16(wav, ch1);
+                break;
+            case WavMode::Stereo:
+                append_i16(wav, ch0);
+                append_i16(wav, ch1);
+                break;
+            case WavMode::Mix:
+                append_i16(wav, static_cast<int16_t>((static_cast<int32_t>(ch0) + static_cast<int32_t>(ch1)) / 2));
+                break;
+        }
+    }
+
+    const size_t actual_ms = (frames * 1000ull) / sample_rate;
+    filename = "mcp3202_" + safe_mode + "_" + std::to_string(actual_ms) + "ms_" + std::to_string(sample_rate) + "hz.wav";
+    return wav;
 }
 
 void WebServer::listen(const std::string& host, int port) {

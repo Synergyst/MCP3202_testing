@@ -43,14 +43,29 @@ void AdcSampler::worker() {
             if (!adc_->isOpen()) adc_->open();
 
             std::array<uint16_t, 2> raw{{adc_->readChannel(0), adc_->readChannel(1)}};
+            const auto sample_time = std::chrono::steady_clock::now();
             {
                 std::lock_guard<std::mutex> lock(mtx_);
+                if (total_frames_ == 0) {
+                    first_sample_time_ = sample_time;
+                    last_sample_time_ = sample_time;
+                    measured_sample_rate_hz_ = config_.sample_rate_hz;
+                } else {
+                    last_sample_time_ = sample_time;
+                }
                 ring_[0][write_index_] = raw[0];
                 ring_[1][write_index_] = raw[1];
                 write_index_ = (write_index_ + 1) % ring_[0].size();
                 valid_samples_ = std::min(valid_samples_ + 1, ring_[0].size());
                 latest_raw_ = raw;
                 total_frames_++;
+                if (total_frames_ > 1) {
+                    const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(last_sample_time_ - first_sample_time_).count();
+                    if (elapsed_ns > 0) {
+                        const uint64_t measured = ((total_frames_ - 1) * 1000000000ull + static_cast<uint64_t>(elapsed_ns / 2)) / static_cast<uint64_t>(elapsed_ns);
+                        measured_sample_rate_hz_ = static_cast<uint32_t>(std::max<uint64_t>(1, measured));
+                    }
+                }
                 healthy_ = true;
                 last_error_.clear();
             }
@@ -108,6 +123,20 @@ std::vector<uint16_t> AdcSampler::copyRecentLocked(int channel, size_t max_point
     return decimated;
 }
 
+std::vector<uint16_t> AdcSampler::copyRecentExactLocked(int channel, size_t frames) const {
+    const auto& ring = ring_[channel];
+    const size_t count = std::min({frames, valid_samples_, ring.size()});
+    if (count == 0) return {};
+
+    std::vector<uint16_t> ordered;
+    ordered.reserve(count);
+    const size_t start = (write_index_ + ring.size() - count) % ring.size();
+    for (size_t i = 0; i < count; ++i) {
+        ordered.push_back(ring[(start + i) % ring.size()]);
+    }
+    return ordered;
+}
+
 AdcScopeData AdcSampler::snapshot(size_t max_points) const {
     std::lock_guard<std::mutex> lock(mtx_);
     AdcScopeData data;
@@ -116,6 +145,7 @@ AdcScopeData AdcSampler::snapshot(size_t max_points) const {
     data.healthy = healthy_;
     data.bitbang = config_.adc.bitbang;
     data.sample_rate_hz = config_.sample_rate_hz;
+    data.measured_sample_rate_hz = measured_sample_rate_hz_ ? measured_sample_rate_hz_ : config_.sample_rate_hz;
     data.latest_raw = latest_raw_;
     data.latest_volts = {{
         (static_cast<double>(latest_raw_[0]) * config_.vref) / 4095.0,
@@ -126,5 +156,27 @@ AdcScopeData AdcSampler::snapshot(size_t max_points) const {
     data.last_error = last_error_;
     data.samples[0] = copyRecentLocked(0, max_points);
     data.samples[1] = copyRecentLocked(1, max_points);
+    return data;
+}
+
+AdcScopeData AdcSampler::recent(size_t frames) const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    AdcScopeData data;
+    data.enabled = config_.enabled;
+    data.running = running_;
+    data.healthy = healthy_;
+    data.bitbang = config_.adc.bitbang;
+    data.sample_rate_hz = config_.sample_rate_hz;
+    data.measured_sample_rate_hz = measured_sample_rate_hz_ ? measured_sample_rate_hz_ : config_.sample_rate_hz;
+    data.latest_raw = latest_raw_;
+    data.latest_volts = {{
+        (static_cast<double>(latest_raw_[0]) * config_.vref) / 4095.0,
+        (static_cast<double>(latest_raw_[1]) * config_.vref) / 4095.0
+    }};
+    data.total_frames = total_frames_;
+    data.dropped_reads = dropped_reads_;
+    data.last_error = last_error_;
+    data.samples[0] = copyRecentExactLocked(0, frames);
+    data.samples[1] = copyRecentExactLocked(1, frames);
     return data;
 }

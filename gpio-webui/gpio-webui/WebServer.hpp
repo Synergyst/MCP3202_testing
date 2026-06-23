@@ -23,6 +23,7 @@ private:
     void setup_routes();
     std::string serialize_state();
     std::string serialize_adc_scope(size_t max_points);
+    std::string build_adc_wav(const std::string& mode, size_t duration_ms, std::string& filename);
 
     httplib::Server svr;
     std::map<int, std::shared_ptr<PinState>>& registry;
