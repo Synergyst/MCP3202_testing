@@ -1,0 +1,13 @@
+{
+  "pins": {
+    "32": {
+      "is_output": true,
+      "target_output_state": false
+    },
+    "40": {
+      "is_output": false,
+      "target_output_state": false
+    }
+  },
+  "timeout_ms": 50
+}
