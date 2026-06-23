@@ -247,28 +247,6 @@ value = ((rx[1] & 0x0F) << 8) | rx[2];
 
 This matches the datasheet's guidance for MCU SPI ports that transfer 8-bit segments, where leading zeros before the start bit are ignored and the returned bytes contain the null bit plus the high and low conversion bits [1].
 
-## Git first commit
-
-The repository has already been initialized and the remote has been added:
-
-```bash
-git remote -v
-```
-
-Recommended initial commit flow:
-
-```bash
-cd /root/mcp-adc
-
-git branch -M main
-git status --short
-git add .
-git commit -m "Initial MCP3202 CM4 test project"
-git push -u origin main
-```
-
-If you do not want built binaries or object files committed, run `make clean` under `gpio-webui/` and remove/rebuild the standalone binaries before `git add .`.
-
 ## Reference
 
 [1] Microchip Technology Inc., `MCP3202.pdf`, MCP3202 2.7V Dual Channel 12-Bit A/D Converter with SPI Serial Interface.
