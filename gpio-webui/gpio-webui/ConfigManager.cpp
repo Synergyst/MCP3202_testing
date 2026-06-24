@@ -40,6 +40,13 @@ bool ConfigManager::load(std::map<int, std::shared_ptr<PinState>>& registry, int
 
 void ConfigManager::save(const std::map<int, std::shared_ptr<PinState>>& registry, int timeout_ms) {
     json j;
+    {
+        std::ifstream existing(config_path);
+        if (existing.is_open()) {
+            try { existing >> j; } catch (...) { j = json::object(); }
+        }
+    }
+    if (!j.is_object()) j = json::object();
     j["timeout_ms"] = timeout_ms;
     j["pins"] = json::object();
 

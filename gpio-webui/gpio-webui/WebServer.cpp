@@ -1,4 +1,5 @@
 #include "WebServer.hpp"
+#include "AudioProcessing.hpp"
 #include <nlohmann/json.hpp>
 #include <iostream>
 #include <sstream>
@@ -10,6 +11,7 @@
 #include <array>
 #include <cstdint>
 #include <cmath>
+#include <fstream>
 
 using json = nlohmann::json;
 
@@ -45,6 +47,11 @@ const char* HTML_UI = R"html(
         select, button.action-btn { background: #2a2a2a; color: #fff; border: 1px solid #444; padding: 6px 12px; border-radius: 5px; cursor: pointer; }
         .record-panel { justify-content: flex-start; margin-top: 14px; margin-bottom: 0; padding: 12px 14px; }
         .record-panel select { min-width: 170px; }
+        .effects-panel { align-items: flex-start; }
+        .effects-list { display: flex; gap: 10px; flex-wrap: wrap; max-width: 760px; }
+        .effect-item { display: inline-flex; align-items: center; gap: 5px; color: #d5d5d5; font-size: .86rem; background: #20272a; border: 1px solid #334; padding: 5px 8px; border-radius: 6px; }
+        .effect-item.disabled { opacity: .48; }
+        .effect-item input { width: auto; }
         .record-help { color: #9aa; font-size: .82rem; }
         .record-status { color: #8df7ff; font-size: .85rem; min-width: 160px; }
         button.action-btn.active-high { background: #00ff87; color: #000; font-weight: bold; }
@@ -59,6 +66,16 @@ const char* HTML_UI = R"html(
         .scope-wrap { position: relative; margin-top: 12px; background: #070b0d; border: 1px solid #263238; border-radius: 8px; overflow: hidden; }
         #adcScope { display: block; width: 100%; height: 220px; image-rendering: pixelated; }
         .status-pill { padding: 4px 9px; border-radius: 999px; font-size: 0.8rem; border: 1px solid #555; }
+        .cid-card { width: 100%; max-width: 1200px; box-sizing: border-box; margin-bottom: 20px; }
+        body.gpio-only .cid-card { display: none; }
+        .cid-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 18px; margin-top: 10px; }
+        .cid-item { color: #bdbdbd; font-size: .9rem; }
+        .cid-item b { color: #8df7ff; display: block; margin-top: 2px; word-break: break-word; }
+        .cid-raw { margin-top: 12px; background: #080b0c; border: 1px solid #263238; border-radius: 8px; padding: 10px; font-family: monospace; color: #d7f7ff; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 150px; overflow-y: auto; }
+        .cid-tune { margin-top: 12px; align-items: center; }
+        .cid-tune input[type="number"] { width: 76px; }
+        .cid-tune select { min-width: 120px; }
+        .cid-tune label { color: #cfcfcf; font-size: .86rem; }
         .status-ok { color: #00ff87; background: rgba(0,255,135,.12); border-color: #00ff87; }
         .status-bad { color: #ff6b6b; background: rgba(255,65,65,.12); border-color: #ff4141; }
         .tiny { color: #777; font-size: .78rem; margin-top: 8px; }
@@ -101,11 +118,83 @@ const char* HTML_UI = R"html(
                 <option value="stereo">Stereo CH0 + CH1</option>
                 <option value="mix">Mono mix CH0 + CH1</option>
             </select>
-            <button onclick="downloadWav()">Download WAV</button>
+            <select id="audioCodec">
+                <option value="pcm16">WAV PCM 16-bit</option>
+            </select>
+            <button onclick="downloadWav()">Download Audio</button>
             <span class="record-status" id="wavStatus"></span>
             <span class="record-help">Downloads the newest n ms already held in the ADC ring buffer as 16-bit PCM.</span>
         </div>
+        <div class="config-panel record-panel effects-panel">
+            <label>Effects:</label>
+            <div class="effects-list" id="effectsList">Loading audio modules...</div>
+        </div>
         <div class="tiny"><span style="color:#00ff87">CH0 is green</span>, <span style="color:#ffcf33">CH1 is amber</span>. The scope endpoint returns recent ring-buffer history with min/max decimation so audio peaks remain visible while the browser polls at UI speed.</div>
+    </div>
+
+    <div class="card cid-card" id="callerIdCard">
+        <div class="card-header">
+            <div>
+                <span class="pin-title">Caller ID FSK Detector</span>
+                <span class="bcm-tag">Bell 202: 1200 Hz mark / 2200 Hz space @ 1200 baud</span>
+            </div>
+            <span class="status-pill status-bad" id="cidStatus">LISTENING</span>
+        </div>
+        <div class="cid-grid">
+            <div class="cid-item">Number<b id="cidNumber">-</b></div>
+            <div class="cid-item">Name<b id="cidName">-</b></div>
+            <div class="cid-item">Date/Time<b id="cidDate">-</b></div>
+            <div class="cid-item">Message Type<b id="cidType">-</b></div>
+            <div class="cid-item">Checksum<b id="cidChecksum">-</b></div>
+            <div class="cid-item">Current Confidence<b id="cidConfidence">-</b></div>
+            <div class="cid-item">Best Confidence<b id="cidBestConfidence">-</b></div>
+            <div class="cid-item">Channel<b id="cidChannel">-</b></div>
+            <div class="cid-item">Best Channel<b id="cidBestChannel">-</b></div>
+            <div class="cid-item">Last Update<b id="cidUpdate">-</b></div>
+        </div>
+        <div class="config-panel record-panel cid-tune">
+            <label>FSK channel <select id="cidTuneChannel"><option value="0">CH0</option><option value="1">CH1</option><option value="2">Mix</option><option value="-1">Auto</option></select></label>
+            <label>Mark <input type="number" id="cidTuneMark" value="1200" step="5"> Hz</label>
+            <label>Space <input type="number" id="cidTuneSpace" value="2200" step="5"> Hz</label>
+            <label>Baud <input type="number" id="cidTuneBaud" value="1200" step="1"></label>
+            <label>Window <input type="number" id="cidTuneWindow" value="5000" step="250"> ms</label>
+            <label><input type="checkbox" id="cidTuneNormalize" checked> normalize</label>
+            <label>Headroom <input type="number" id="cidTuneHeadroom" value="6" step="1"> dB</label>
+            <label>Extra gain <input type="number" id="cidTuneGain" value="12" step="1"> dB</label>
+            <label><input type="checkbox" id="cidTuneDc" checked> DC block</label>
+            <button onclick="applyCallerIdSettings()">Apply FSK Tune</button>
+            <button onclick="reloadCallerIdSettings()">Reload Settings</button>
+            <span class="record-status" id="cidTuneStatus"></span>
+        </div>
+        <div class="tiny" id="cidError"></div>
+        <div class="cid-raw" id="cidRaw">Raw FSK bits/bytes will appear here when detected.</div>
+        <div class="cid-raw" id="cidBestRaw">Best confidence FSK bits/bytes will appear here.</div>
+    </div>
+
+    <div class="card cid-card" id="telephonyCard">
+        <div class="card-header"><div><span class="pin-title">CH1817 DAA</span><span class="bcm-tag">OFFHK + RI</span></div><span class="status-pill" id="chStatus">-</span></div>
+        <div class="cid-grid">
+            <div class="cid-item">RI level<b id="chRiLevel">-</b></div><div class="cid-item">Ringing<b id="chRinging">-</b></div><div class="cid-item">RI frequency<b id="chFreq">-</b></div><div class="cid-item">Hook state<b id="chHook">-</b></div>
+        </div>
+        <div class="config-panel record-panel cid-tune">
+            <button onclick="setChOffhook(false)">Go On-Hook</button><button onclick="setChOffhook(true)">Go Off-Hook</button>
+            <label><input type="checkbox" id="chAutoAnswer"> auto-answer</label><label>Delay <input type="number" id="chAutoDelay" min="0" max="600000" step="100" value="0"> ms</label><button onclick="applyCh1817Settings()">Apply CH1817</button><span class="record-status" id="chApplyStatus"></span>
+        </div>
+        <div class="tiny" id="chHelp"></div>
+    </div>
+
+    <div class="card cid-card" id="htCard">
+        <div class="card-header"><div><span class="pin-title">HT9032C Caller ID Receiver</span><span class="bcm-tag">CDET + DOUT + DOUTC</span></div><span class="status-pill" id="htStatus">-</span></div>
+        <div class="cid-grid">
+            <div class="cid-item">Carrier CDET<b id="htCarrier">-</b></div><div class="cid-item">PDWN/Power<b id="htPower">-</b></div><div class="cid-item">DOUT level<b id="htDoutLevel">-</b></div><div class="cid-item">DOUTC level<b id="htDoutcLevel">-</b></div>
+            <div class="cid-item">DOUT decoded<b id="htDoutDecoded">-</b></div><div class="cid-item">DOUTC decoded<b id="htDoutcDecoded">-</b></div>
+        </div>
+        <div class="config-panel record-panel cid-tune">
+            <label>FSK result source <select id="fskSource"><option value="auto">Auto best</option><option value="software_adc">Software ADC</option><option value="ht9032_dout">HT9032 DOUT</option><option value="ht9032_doutc">HT9032 DOUTC</option></select></label><button onclick="applyFskSource()">Apply Source</button>
+            <label>Monitor <select id="htMonitor"><option value="both">DOUT + DOUTC</option><option value="dout">DOUT only</option><option value="doutc">DOUTC only</option></select></label>
+            <label><input type="checkbox" id="htPowered" checked> powered</label><button onclick="applyHt9032Settings()">Apply HT9032</button><span class="record-status" id="htApplyStatus"></span>
+        </div>
+        <div class="cid-raw" id="htRaw">HT9032 raw bits/bytes will appear here.</div><div class="tiny" id="htHelp"></div>
     </div>
 
     <div class="grid" id="pinGrid"></div>
@@ -204,6 +293,137 @@ const char* HTML_UI = R"html(
             } catch (err) {
                 console.error("Error updates:", err);
             }
+        }
+
+        function channelLabel(ch) {
+            return ch === 0 ? 'CH0' : (ch === 1 ? 'CH1' : (ch === 2 ? 'CH0+CH1 mix' : (ch === -1 ? 'Auto' : '-')));
+        }
+
+        let cidTuneDirty = false;
+        function markCidTuneDirty() { cidTuneDirty = true; document.getElementById('cidTuneStatus').textContent = 'Unsaved changes'; }
+        function cidTuneFocused() { return ['cidTuneChannel','cidTuneMark','cidTuneSpace','cidTuneBaud','cidTuneWindow','cidTuneNormalize','cidTuneHeadroom','cidTuneGain','cidTuneDc'].includes(document.activeElement && document.activeElement.id); }
+        function fillCallerIdSettings(settings, force=false) {
+            if (!settings || (!force && (cidTuneDirty || cidTuneFocused()))) return;
+            document.getElementById('cidTuneChannel').value = settings.channel ?? 0;
+            document.getElementById('cidTuneMark').value = settings.mark_hz ?? 1200;
+            document.getElementById('cidTuneSpace').value = settings.space_hz ?? 2200;
+            document.getElementById('cidTuneBaud').value = settings.baud ?? 1200;
+            document.getElementById('cidTuneWindow').value = settings.analysis_ms ?? 5000;
+            document.getElementById('cidTuneNormalize').checked = settings.normalize !== false;
+            document.getElementById('cidTuneHeadroom').value = settings.normalize_headroom_db ?? 6;
+            document.getElementById('cidTuneGain').value = settings.extra_gain_db ?? 12;
+            document.getElementById('cidTuneDc').checked = settings.dc_block !== false;
+            cidTuneDirty = false;
+        }
+
+        function wireCallerIdTuneDirty() {
+            ['cidTuneChannel','cidTuneMark','cidTuneSpace','cidTuneBaud','cidTuneWindow','cidTuneNormalize','cidTuneHeadroom','cidTuneGain','cidTuneDc'].forEach(id => {
+                const el = document.getElementById(id); if (el) { el.addEventListener('input', markCidTuneDirty); el.addEventListener('change', markCidTuneDirty); }
+            });
+        }
+
+        async function reloadCallerIdSettings() {
+            const status = document.getElementById('cidTuneStatus'); status.textContent = 'Reloading...';
+            try { const res = await fetch('/api/caller-id/settings'); const data = await res.json(); if(!res.ok) throw new Error(data.error || `HTTP ${res.status}`); fillCallerIdSettings(data, true); status.textContent = 'Reloaded'; }
+            catch(err) { status.textContent = `Reload failed: ${err.message || err}`; }
+        }
+
+        async function applyCallerIdSettings() {
+            cidTuneDirty = true;
+            const settings = {
+                channel: parseInt(document.getElementById('cidTuneChannel').value, 10),
+                mark_hz: parseFloat(document.getElementById('cidTuneMark').value),
+                space_hz: parseFloat(document.getElementById('cidTuneSpace').value),
+                baud: parseFloat(document.getElementById('cidTuneBaud').value),
+                analysis_ms: parseInt(document.getElementById('cidTuneWindow').value, 10),
+                normalize: document.getElementById('cidTuneNormalize').checked,
+                normalize_headroom_db: parseFloat(document.getElementById('cidTuneHeadroom').value),
+                extra_gain_db: parseFloat(document.getElementById('cidTuneGain').value),
+                dc_block: document.getElementById('cidTuneDc').checked
+            };
+            const status = document.getElementById('cidTuneStatus');
+            status.textContent = 'Applying...';
+            try {
+                const res = await fetch('/api/caller-id/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+                status.textContent = 'Applied';
+                cidTuneDirty = false;
+                fillCallerIdSettings(data.settings || data, true);
+                fetchCallerId();
+            } catch (err) {
+                status.textContent = `Failed: ${err.message || err}`;
+            }
+        }
+
+        async function fetchCallerId() {
+            try {
+                const res = await fetch('/api/caller-id');
+                const data = await res.json();
+                const status = document.getElementById('cidStatus');
+                status.textContent = data.detected ? (data.checksum_ok ? 'DECODED' : 'DECODED?') : (data.status || 'LISTENING').toUpperCase();
+                status.className = `status-pill ${data.detected ? 'status-ok' : 'status-bad'}`;
+                document.getElementById('cidNumber').textContent = data.number || '-';
+                document.getElementById('cidName').textContent = data.name || '-';
+                document.getElementById('cidDate').textContent = data.date_time || data.date_time_raw || '-';
+                document.getElementById('cidType').textContent = data.message_type || '-';
+                document.getElementById('cidChecksum').textContent = data.detected ? (data.checksum_ok ? 'OK' : 'BAD/unknown') : '-';
+                document.getElementById('cidConfidence').textContent = data.confidence ? data.confidence.toFixed(3) : '-';
+                document.getElementById('cidBestConfidence').textContent = data.best_confidence ? data.best_confidence.toFixed(3) : '-';
+                const ch = data.selected_channel;
+                document.getElementById('cidChannel').textContent = channelLabel(ch);
+                document.getElementById('cidBestChannel').textContent = channelLabel(data.best_selected_channel);
+                document.getElementById('cidUpdate').textContent = data.last_update || '-';
+                document.getElementById('cidError').textContent = data.last_error || data.status || '';
+                document.getElementById('cidRaw').textContent = `Current raw bytes: ${data.raw_bytes_hex || '-'}\nCurrent raw bits: ${data.raw_bits || '-'}`;
+                document.getElementById('cidBestRaw').textContent = `Best status: ${data.best_status || '-'}\nBest raw bytes: ${data.best_raw_bytes_hex || '-'}\nBest raw bits: ${data.best_raw_bits || '-'}`;
+                fillCallerIdSettings(data.settings);
+            } catch (err) {
+                document.getElementById('cidError').textContent = `Caller ID error: ${err}`;
+            }
+        }
+
+        async function fetchTelephony() {
+            try {
+                const res = await fetch('/api/telephony/ch1817'); const data = await res.json();
+                const st = document.getElementById('chStatus'); st.textContent = data.ringing ? 'RINGING' : (data.offhook ? 'OFF-HOOK' : 'IDLE'); st.className = `status-pill ${data.ringing ? 'status-ok' : 'status-bad'}`;
+                document.getElementById('chRiLevel').textContent = data.ri_level_text || '-'; document.getElementById('chRinging').textContent = data.ringing ? 'YES' : 'NO'; document.getElementById('chFreq').textContent = `${(data.ri_frequency_hz || 0).toFixed(2)} Hz`; document.getElementById('chHook').textContent = data.offhook ? 'off-hook' : 'on-hook';
+                if (document.activeElement?.id !== 'chAutoDelay' && document.activeElement?.id !== 'chAutoAnswer') { document.getElementById('chAutoAnswer').checked = data.settings?.auto_answer_enabled || false; document.getElementById('chAutoDelay').value = data.settings?.auto_answer_delay_ms ?? 0; }
+                document.getElementById('chHelp').textContent = data.last_error || data.help || '';
+            } catch(err) { document.getElementById('chHelp').textContent = `CH1817 error: ${err.message || err}`; }
+        }
+
+        async function setChOffhook(offhook) { await fetch('/api/telephony/ch1817/offhook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offhook})}); fetchTelephony(); }
+        async function applyCh1817Settings() {
+            const st=document.getElementById('chApplyStatus'); st.textContent='Applying...';
+            try { const res=await fetch('/api/telephony/ch1817/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_answer_enabled:document.getElementById('chAutoAnswer').checked,auto_answer_delay_ms:parseInt(document.getElementById('chAutoDelay').value||'0',10)})}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'failed'); st.textContent='Applied'; fetchTelephony(); }
+            catch(err){ st.textContent=`Failed: ${err.message||err}`; alert(`Illegal CH1817 configuration:\n${err.message||err}`); }
+        }
+
+        async function fetchHt9032() {
+            try {
+                const res = await fetch('/api/ht9032'); const data = await res.json();
+                const st = document.getElementById('htStatus'); st.textContent = data.carrier ? 'CARRIER' : (data.status || '-').toUpperCase(); st.className = `status-pill ${data.carrier ? 'status-ok' : 'status-bad'}`;
+                document.getElementById('htCarrier').textContent = data.carrier ? 'present' : 'absent'; document.getElementById('htPower').textContent = data.settings?.pdwn_control ? (data.powered ? 'powered' : 'power-down') : 'PDWN not controlled'; document.getElementById('htDoutLevel').textContent = data.dout_level ? 'HIGH' : 'LOW'; document.getElementById('htDoutcLevel').textContent = data.doutc_level ? 'HIGH' : 'LOW';
+                document.getElementById('htDoutDecoded').textContent = data.dout?.decoded ? `${data.dout.number||''} ${data.dout.checksum_ok?'OK':'BAD'}` : (data.dout?.status || '-'); document.getElementById('htDoutcDecoded').textContent = data.doutc?.decoded ? `${data.doutc.number||''} ${data.doutc.checksum_ok?'OK':'BAD'}` : (data.doutc?.status || '-');
+                if (document.activeElement?.id !== 'htMonitor' && document.activeElement?.id !== 'htPowered') { document.getElementById('htMonitor').value = data.settings?.monitor_mode || 'both'; document.getElementById('htPowered').checked = data.settings?.powered !== false; }
+                document.getElementById('htRaw').textContent = `DOUT bytes: ${data.dout?.bytes_hex || '-'}\nDOUT bits: ${data.dout?.bits || '-'}\n\nDOUTC bytes: ${data.doutc?.bytes_hex || '-'}\nDOUTC bits: ${data.doutc?.bits || '-'}`; document.getElementById('htHelp').textContent = data.last_error || data.help || '';
+            } catch(err) { document.getElementById('htHelp').textContent = `HT9032 error: ${err.message || err}`; }
+        }
+
+        async function applyHt9032Settings() {
+            const st=document.getElementById('htApplyStatus'); st.textContent='Applying...';
+            try { const res=await fetch('/api/ht9032/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({monitor_mode:document.getElementById('htMonitor').value,powered:document.getElementById('htPowered').checked})}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'failed'); st.textContent='Applied'; fetchHt9032(); }
+            catch(err){ st.textContent=`Failed: ${err.message||err}`; alert(`Illegal HT9032 configuration:\n${err.message||err}`); }
+        }
+
+        async function applyFskSource() {
+            try { const res=await fetch('/api/system/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fsk_source:document.getElementById('fskSource').value})}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'failed'); }
+            catch(err){ alert(`Unable to save FSK source: ${err.message||err}`); }
         }
 
         async function fetchAdcScope() {
@@ -308,16 +528,60 @@ const char* HTML_UI = R"html(
             fetchStatus();
         }
 
+        async function loadAudioModules() {
+            if (!ADC_ENABLED) return;
+            try {
+                const res = await fetch('/api/audio/modules');
+                const data = await res.json();
+                const effectsList = document.getElementById('effectsList');
+                effectsList.innerHTML = '';
+                for (const effect of (data.effects || [])) {
+                    const label = document.createElement('label');
+                    label.className = `effect-item ${effect.available ? '' : 'disabled'}`;
+                    label.title = effect.description || '';
+                    const input = document.createElement('input');
+                    input.type = 'checkbox';
+                    input.value = effect.id;
+                    input.disabled = !effect.available;
+                    if (effect.id === 'dc_block') input.checked = true;
+                    label.appendChild(input);
+                    label.appendChild(document.createTextNode(effect.label || effect.id));
+                    effectsList.appendChild(label);
+                }
+                const codecSelect = document.getElementById('audioCodec');
+                codecSelect.innerHTML = '';
+                for (const codec of (data.codecs || [])) {
+                    const opt = document.createElement('option');
+                    opt.value = codec.id;
+                    opt.textContent = codec.label || codec.id;
+                    opt.disabled = !codec.available;
+                    if (codec.id === 'pcm16') opt.selected = true;
+                    codecSelect.appendChild(opt);
+                }
+            } catch (err) {
+                document.getElementById('effectsList').textContent = `Unable to load audio modules: ${err}`;
+            }
+        }
+
+        function selectedEffectsCsv() {
+            return Array.from(document.querySelectorAll('#effectsList input[type="checkbox"]:checked'))
+                .map(input => input.value)
+                .join(',');
+        }
+
         async function downloadWav() {
             const durInput = document.getElementById('wavDuration');
             const modeSelect = document.getElementById('wavMode');
+            const codecSelect = document.getElementById('audioCodec');
             const status = document.getElementById('wavStatus');
             const ms = Math.max(1, Math.min(600000, parseInt(durInput.value || '1000', 10)));
             durInput.value = ms;
             const mode = modeSelect.value;
+            const codec = codecSelect.value || 'pcm16';
+            const effects = selectedEffectsCsv();
             status.textContent = 'Preparing download...';
             try {
-                const res = await fetch(`/api/adc/wav?ms=${encodeURIComponent(ms)}&mode=${encodeURIComponent(mode)}`);
+                const res = await fetch(`/api/adc/wav?ms=${encodeURIComponent(ms)}&mode=${encodeURIComponent(mode)}&codec=${encodeURIComponent(codec)}&effects=${encodeURIComponent(effects)}`);
                 if (!res.ok) {
                     let msg = `HTTP ${res.status}`;
                     try { const j = await res.json(); msg = j.error || msg; } catch (_) {}
@@ -359,15 +623,16 @@ const char* HTML_UI = R"html(
 
         const ADC_ENABLED = __ADC_ENABLED__;
         setInterval(fetchStatus, 250);
-        if (ADC_ENABLED) setInterval(fetchAdcScope, 120);
-        window.onload = () => { fetchStatus(); if (ADC_ENABLED) fetchAdcScope(); };
+        if (ADC_ENABLED) { setInterval(fetchAdcScope, 120); setInterval(fetchCallerId, 1000); }
+        setInterval(fetchTelephony, 500); setInterval(fetchHt9032, 500);
+        window.onload = () => { fetchStatus(); wireCallerIdTuneDirty(); if (ADC_ENABLED) { fetchAdcScope(); fetchCallerId(); loadAudioModules(); } fetchTelephony(); fetchHt9032(); fetch('/api/system/settings').then(r=>r.json()).then(d=>{ if(d.fsk_source) document.getElementById('fskSource').value=d.fsk_source; }).catch(()=>{}); };
     </script>
 </body>
 </html>
 )html";
 
-WebServer::WebServer(std::map<int, std::shared_ptr<PinState>>& reg, ConfigManager& cfg, GpioManager& gpio, std::shared_ptr<SystemContext> ctx, AdcSampler* adc, std::set<int> reserved) 
-    : registry(reg), config_mgr(cfg), gpio_mgr(gpio), context(ctx), adc_sampler(adc), reserved_bcm_pins(std::move(reserved)) {
+WebServer::WebServer(std::map<int, std::shared_ptr<PinState>>& reg, ConfigManager& cfg, GpioManager& gpio, std::shared_ptr<SystemContext> ctx, AdcSampler* adc, CallerIdDetector* cid, Ch1817Driver* ch1817, Ht9032Driver* ht9032, std::set<int> reserved) 
+    : registry(reg), config_mgr(cfg), gpio_mgr(gpio), context(ctx), adc_sampler(adc), caller_id_detector(cid), ch1817_driver(ch1817), ht9032_driver(ht9032), reserved_bcm_pins(std::move(reserved)) {
     setup_routes();
 }
 
@@ -391,6 +656,23 @@ void WebServer::setup_routes() {
         res.set_content(serialize_state(), "application/json");
     });
 
+    svr.Get("/api/system/settings", [this](const httplib::Request&, httplib::Response& res) {
+        json j;
+        { std::lock_guard<std::mutex> lock(context->config_mutex); std::ifstream f(context->config_path); if (f.is_open()) { try { f >> j; } catch (...) { j = json::object(); } } }
+        if (!j.is_object()) j = json::object();
+        res.set_content(json{{"fsk_source", j.value("fsk_source", "auto")}}.dump(), "application/json");
+    });
+
+    svr.Post("/api/system/settings", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            json body = json::parse(req.body.empty() ? "{}" : req.body);
+            std::string src = body.value("fsk_source", "auto");
+            if (src != "auto" && src != "software_adc" && src != "ht9032_dout" && src != "ht9032_doutc") throw std::runtime_error("Illegal FSK source; use auto, software_adc, ht9032_dout, or ht9032_doutc.");
+            std::lock_guard<std::mutex> lock(context->config_mutex); json j; { std::ifstream f(context->config_path); if (f.is_open()) { try { f >> j; } catch (...) { j = json::object(); } } } if (!j.is_object()) j = json::object(); j["fsk_source"] = src; std::ofstream out(context->config_path); if (out.is_open()) out << j.dump(2);
+            res.set_content(json{{"status","ok"},{"fsk_source",src}}.dump(), "application/json");
+        } catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
+    });
+
     svr.Get("/api/adc", [this](const httplib::Request& req, httplib::Response& res) {
         if (!adc_sampler || !adc_sampler->isEnabled()) {
             res.status = 404;
@@ -402,6 +684,74 @@ void WebServer::setup_routes() {
             points = std::max<size_t>(100, std::min<size_t>(5000, std::strtoul(req.get_param_value("points").c_str(), nullptr, 10)));
         }
         res.set_content(serialize_adc_scope(points), "application/json");
+    });
+
+    svr.Get("/api/caller-id", [this](const httplib::Request&, httplib::Response& res) {
+        if (!caller_id_detector) {
+            res.status = 404;
+            res.set_content("{\"enabled\":false,\"error\":\"Caller ID detector disabled\"}", "application/json");
+            return;
+        }
+        res.set_content(caller_id_detector->snapshotJson().dump(), "application/json");
+    });
+
+    svr.Get("/api/caller-id/settings", [this](const httplib::Request&, httplib::Response& res) {
+        if (!caller_id_detector) {
+            res.status = 404;
+            res.set_content("{\"enabled\":false,\"error\":\"Caller ID detector disabled\"}", "application/json");
+            return;
+        }
+        res.set_content(caller_id_detector->settingsJson().dump(), "application/json");
+    });
+
+    svr.Post("/api/caller-id/settings", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!caller_id_detector) {
+            res.status = 404;
+            res.set_content("{\"status\":\"error\",\"error\":\"Caller ID detector disabled\"}", "application/json");
+            return;
+        }
+        try {
+            json j = json::parse(req.body.empty() ? "{}" : req.body);
+            caller_id_detector->updateSettingsFromJson(j);
+            json out = {{"status", "ok"}, {"settings", caller_id_detector->settingsJson()}};
+            res.set_content(out.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json out = {{"status", "error"}, {"error", e.what()}};
+            res.set_content(out.dump(), "application/json");
+        }
+    });
+
+    svr.Get("/api/telephony/ch1817", [this](const httplib::Request&, httplib::Response& res) {
+        if (!ch1817_driver) { res.status = 404; res.set_content("{\"enabled\":false,\"error\":\"CH1817 driver disabled\"}", "application/json"); return; }
+        res.set_content(ch1817_driver->snapshotJson().dump(), "application/json");
+    });
+
+    svr.Post("/api/telephony/ch1817/settings", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ch1817_driver) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"CH1817 driver disabled\"}", "application/json"); return; }
+        try { json j = json::parse(req.body.empty() ? "{}" : req.body); ch1817_driver->updateFromJson(j); res.set_content(json{{"status","ok"},{"settings",ch1817_driver->settingsJson()}}.dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()},{"help",ch1817_driver->validationHelp()}}.dump(), "application/json"); }
+    });
+
+    svr.Post("/api/telephony/ch1817/offhook", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ch1817_driver) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"CH1817 driver disabled\"}", "application/json"); return; }
+        try { json j = json::parse(req.body.empty() ? "{}" : req.body); ch1817_driver->setOffhook(j.value("offhook", false)); res.set_content(json{{"status","ok"},{"state",ch1817_driver->snapshotJson()}}.dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()},{"help",ch1817_driver->validationHelp()}}.dump(), "application/json"); }
+    });
+
+    svr.Get("/api/ht9032", [this](const httplib::Request&, httplib::Response& res) {
+        if (!ht9032_driver) { res.status = 404; res.set_content("{\"enabled\":false,\"error\":\"HT9032 driver disabled\"}", "application/json"); return; }
+        res.set_content(ht9032_driver->snapshotJson().dump(), "application/json");
+    });
+
+    svr.Post("/api/ht9032/settings", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ht9032_driver) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"HT9032 driver disabled\"}", "application/json"); return; }
+        try { json j = json::parse(req.body.empty() ? "{}" : req.body); ht9032_driver->updateFromJson(j); res.set_content(json{{"status","ok"},{"settings",ht9032_driver->settingsJson()}}.dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()},{"help",ht9032_driver->validationHelp()}}.dump(), "application/json"); }
+    });
+
+    svr.Get("/api/audio/modules", [this](const httplib::Request&, httplib::Response& res) {
+        res.set_content(AudioProcessing::catalog().dump(), "application/json");
     });
 
     svr.Get("/api/adc/wav", [this](const httplib::Request& req, httplib::Response& res) {
@@ -420,12 +770,15 @@ void WebServer::setup_routes() {
         duration_ms = std::max<size_t>(1, std::min<size_t>(600000, duration_ms));
 
         std::string mode = req.has_param("mode") ? req.get_param_value("mode") : "ch0";
+        std::string effects = req.has_param("effects") ? req.get_param_value("effects") : "";
+        std::string codec = req.has_param("codec") ? req.get_param_value("codec") : "pcm16";
         std::string filename;
+        std::string content_type;
         try {
-            std::string wav = build_adc_wav(mode, duration_ms, filename);
+            std::string payload = build_adc_wav(mode, duration_ms, effects, codec, filename, content_type);
             res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
             res.set_header("Cache-Control", "no-store");
-            res.set_content(wav.data(), wav.size(), "audio/wav");
+            res.set_content(payload.data(), payload.size(), content_type.c_str());
         } catch (const std::exception& e) {
             res.status = 400;
             json j = {{"status", "error"}, {"error", e.what()}};
@@ -527,9 +880,10 @@ std::string WebServer::serialize_adc_scope(size_t max_points) {
     return j.dump();
 }
 
-std::string WebServer::build_adc_wav(const std::string& mode, size_t duration_ms, std::string& filename) {
+std::string WebServer::build_adc_wav(const std::string& mode, size_t duration_ms, const std::string& effects_csv, const std::string& codec, std::string& filename, std::string& content_type) {
     if (!adc_sampler) throw std::runtime_error("ADC sampler not configured");
 
+    const auto options = AudioProcessing::parseOptions(effects_csv, codec);
     const auto meta = adc_sampler->snapshot(1);
     const uint32_t sample_rate = std::max<uint32_t>(1, meta.measured_sample_rate_hz ? meta.measured_sample_rate_hz : meta.sample_rate_hz);
     // Duration selects how much ring-buffer history to copy. Use the measured rate so the downloaded WAV
@@ -548,70 +902,44 @@ std::string WebServer::build_adc_wav(const std::string& mode, size_t duration_ms
     else if (mode == "mix" || mode == "mono-mix") { wav_mode = WavMode::Mix; safe_mode = "mix"; }
     else throw std::runtime_error("Invalid WAV mode; use ch0, ch1, stereo, or mix");
 
-    const uint16_t channels = (wav_mode == WavMode::Stereo) ? 2 : 1;
-    const uint16_t bits_per_sample = 16;
-    const uint16_t block_align = channels * (bits_per_sample / 8);
-    const uint32_t byte_rate = sample_rate * block_align;
-    const uint32_t data_bytes = static_cast<uint32_t>(frames * block_align);
-    const uint32_t riff_size = 36 + data_bytes;
-
     auto pcm16 = [](uint16_t raw) -> int16_t {
         const int32_t centered = static_cast<int32_t>(std::max<uint16_t>(0, std::min<uint16_t>(4095, raw))) - 2048;
         return static_cast<int16_t>(std::max<int32_t>(-32768, std::min<int32_t>(32767, centered * 16)));
     };
-    auto append_u16 = [](std::string& s, uint16_t v) {
-        s.push_back(static_cast<char>(v & 0xff));
-        s.push_back(static_cast<char>((v >> 8) & 0xff));
-    };
-    auto append_u32 = [](std::string& s, uint32_t v) {
-        s.push_back(static_cast<char>(v & 0xff));
-        s.push_back(static_cast<char>((v >> 8) & 0xff));
-        s.push_back(static_cast<char>((v >> 16) & 0xff));
-        s.push_back(static_cast<char>((v >> 24) & 0xff));
-    };
-    auto append_i16 = [&](std::string& s, int16_t v) {
-        append_u16(s, static_cast<uint16_t>(v));
-    };
 
-    std::string wav;
-    wav.reserve(44 + data_bytes);
-    wav.append("RIFF", 4);
-    append_u32(wav, riff_size);
-    wav.append("WAVE", 4);
-    wav.append("fmt ", 4);
-    append_u32(wav, 16);                 // PCM fmt chunk size
-    append_u16(wav, 1);                  // PCM format
-    append_u16(wav, channels);
-    append_u32(wav, sample_rate);
-    append_u32(wav, byte_rate);
-    append_u16(wav, block_align);
-    append_u16(wav, bits_per_sample);
-    wav.append("data", 4);
-    append_u32(wav, data_bytes);
+    AudioBuffer buffer;
+    buffer.sample_rate_hz = sample_rate;
+    buffer.channels = (wav_mode == WavMode::Stereo) ? 2 : 1;
+    buffer.samples.reserve(frames * buffer.channels);
 
     for (size_t i = 0; i < frames; ++i) {
         const int16_t ch0 = pcm16(data.samples[0][i]);
         const int16_t ch1 = pcm16(data.samples[1][i]);
         switch (wav_mode) {
             case WavMode::Ch0:
-                append_i16(wav, ch0);
+                buffer.samples.push_back(ch0);
                 break;
             case WavMode::Ch1:
-                append_i16(wav, ch1);
+                buffer.samples.push_back(ch1);
                 break;
             case WavMode::Stereo:
-                append_i16(wav, ch0);
-                append_i16(wav, ch1);
+                buffer.samples.push_back(ch0);
+                buffer.samples.push_back(ch1);
                 break;
             case WavMode::Mix:
-                append_i16(wav, static_cast<int16_t>((static_cast<int32_t>(ch0) + static_cast<int32_t>(ch1)) / 2));
+                buffer.samples.push_back(static_cast<int16_t>((static_cast<int32_t>(ch0) + static_cast<int32_t>(ch1)) / 2));
                 break;
         }
     }
 
+    AudioProcessing::applyEffects(buffer, options);
+    std::string payload = AudioProcessing::encodeWav(buffer, options);
+
     const size_t actual_ms = (frames * 1000ull) / sample_rate;
-    filename = "mcp3202_" + safe_mode + "_" + std::to_string(actual_ms) + "ms_" + std::to_string(sample_rate) + "hz.wav";
-    return wav;
+    std::string effects_part = options.effects.empty() ? "dry" : AudioProcessing::sanitizeForFilename(effects_csv);
+    filename = "mcp3202_" + safe_mode + "_" + effects_part + "_" + std::to_string(actual_ms) + "ms_" + std::to_string(sample_rate) + "hz.wav";
+    content_type = "audio/wav";
+    return payload;
 }
 
 void WebServer::listen(const std::string& host, int port) {

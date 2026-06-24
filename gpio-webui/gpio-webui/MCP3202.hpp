@@ -16,11 +16,11 @@ public:
         uint8_t bits_per_word = 8;
 
         // Software/custom wiring settings. The same cs_bcm is used for hardware software-CS
-        // and bit-banged CS. Defaults match the earlier Python prototype wiring.
+        // and bit-banged CS. Default CS is SPI0 CE0: physical pin 24 / BCM8.
         int clk_bcm = 11;
         int mosi_bcm = 10;
         int miso_bcm = 9;
-        int cs_bcm = 16;
+        int cs_bcm = 8;
 
         // Used only for hardware SPI software-CS fallback.
         std::string gpio_chip = "0";

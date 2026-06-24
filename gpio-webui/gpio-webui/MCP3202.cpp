@@ -15,6 +15,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
 constexpr size_t GPIO_BLOCK_SIZE = 4096;
@@ -25,6 +26,50 @@ constexpr int GPLEV0 = 13;
 
 std::string errnoMessage(const std::string& prefix) {
     return prefix + ": " + std::strerror(errno);
+}
+
+void setGpioFunction(volatile uint32_t* gpio, int bcm, uint32_t function) {
+    const int reg = GPFSEL0 + (bcm / 10);
+    const int shift = (bcm % 10) * 3;
+    uint32_t v = gpio[reg];
+    v &= ~(0x7u << shift);
+    v |= ((function & 0x7u) << shift);
+    gpio[reg] = v;
+}
+
+void restoreSpi0Alt0PinsIfNeeded(const MCP3202::Config& config) {
+    // Bit-bang mode intentionally owns the pins as GPIO. Hardware SPI mode needs
+    // BCM9/10/11 back in ALT0 after any previous GPIO/bit-bang test run left
+    // them as ordinary GPIO. Otherwise /dev/spidev0.x transfers can silently read
+    // all zeroes even though the ADC and wiring are fine.
+    if (config.device.find("spidev0.") == std::string::npos) return;
+
+    int mem_fd = ::open("/dev/gpiomem", O_RDWR | O_SYNC | O_CLOEXEC);
+    if (mem_fd < 0) mem_fd = ::open("/dev/mem", O_RDWR | O_SYNC | O_CLOEXEC);
+    if (mem_fd < 0) throw std::runtime_error(errnoMessage("opening /dev/gpiomem or /dev/mem to restore SPI0 pin mux"));
+
+    volatile uint32_t* gpio = static_cast<volatile uint32_t*>(::mmap(nullptr, GPIO_BLOCK_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, 0));
+    int saved_errno = errno;
+    ::close(mem_fd);
+    if (gpio == MAP_FAILED) {
+        errno = saved_errno;
+        throw std::runtime_error(errnoMessage("mapping GPIO registers to restore SPI0 pin mux"));
+    }
+
+    try {
+        constexpr uint32_t ALT0 = 4;
+        setGpioFunction(gpio, 9, ALT0);   // SPI0 MISO
+        setGpioFunction(gpio, 10, ALT0);  // SPI0 MOSI
+        setGpioFunction(gpio, 11, ALT0);  // SPI0 SCLK
+        if (config.cs_bcm < 0) {
+            if (config.device.find("spidev0.1") != std::string::npos) setGpioFunction(gpio, 7, ALT0); // CE1
+            else setGpioFunction(gpio, 8, ALT0); // CE0
+        }
+    } catch (...) {
+        ::munmap(const_cast<uint32_t*>(gpio), GPIO_BLOCK_SIZE);
+        throw;
+    }
+    ::munmap(const_cast<uint32_t*>(gpio), GPIO_BLOCK_SIZE);
 }
 }
 
@@ -44,6 +89,8 @@ void MCP3202::open() {
 
 void MCP3202::openHardwareSpi() {
     if (fd_ >= 0) return;
+
+    restoreSpi0Alt0PinsIfNeeded(config_);
 
     fd_ = ::open(config_.device.c_str(), O_RDWR | O_CLOEXEC);
     if (fd_ < 0) {

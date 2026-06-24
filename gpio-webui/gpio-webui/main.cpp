@@ -14,6 +14,10 @@
 #include "WebServer.hpp"
 #include "SystemContext.hpp"
 #include "AdcSampler.hpp"
+#include "CallerIdDetector.hpp"
+#include "Ch1817Driver.hpp"
+#include "Ht9032Driver.hpp"
+#include "HeaderPins.hpp"
 
 namespace {
 const std::vector<std::pair<int, int>>& headerPinMap() {
@@ -203,7 +207,7 @@ int main(int argc, char* argv[]) {
     adc_config.adc.clk_bcm = 11;
     adc_config.adc.mosi_bcm = 10;
     adc_config.adc.miso_bcm = 9;
-    adc_config.adc.cs_bcm = 16; // existing prototype wiring used BCM16 as MCP3202 CS
+    adc_config.adc.cs_bcm = 8; // default MCP3202 CS is Raspberry Pi SPI0 CE0: physical pin 24 / BCM8
 
     try {
         for (int i = 1; i < argc; ++i) {
@@ -283,10 +287,34 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    const std::set<int> reserved_gpio = configuredAdcPins(adc_config);
-    if (adc_config.enabled) {
-        removeReservedPinsFromRegistry(registry, reserved_gpio);
+    std::unique_ptr<Ch1817Driver> ch1817_driver;
+    std::unique_ptr<Ht9032Driver> ht9032_driver;
+    try {
+        ch1817_driver = std::make_unique<Ch1817Driver>(context);
+        ht9032_driver = std::make_unique<Ht9032Driver>(context);
+        ch1817_driver->updateFromJson(ch1817_driver->settingsJson());
+        ht9032_driver->updateFromJson(ht9032_driver->settingsJson());
+    } catch (const std::exception& e) {
+        std::cerr << "Telephony configuration error: " << e.what() << "\n" << gpioHelpText() << std::endl;
+        return 2;
     }
+
+    std::set<int> reserved_gpio = configuredAdcPins(adc_config);
+    try {
+        if (ch1817_driver && ch1817_driver->settings().enabled) {
+            reserved_gpio.insert(ch1817_driver->offhookBcm());
+            reserved_gpio.insert(ch1817_driver->riBcm());
+        }
+        if (ht9032_driver) {
+            auto ht = ht9032_driver->reservedBcms();
+            reserved_gpio.insert(ht.begin(), ht.end());
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "GPIO reservation error: " << e.what() << "\n" << gpioHelpText() << std::endl;
+        return 2;
+    }
+
+    removeReservedPinsFromRegistry(registry, reserved_gpio);
 
     ConfigManager config_mgr(context->config_path);
     int loaded_timeout = 5000;
@@ -295,15 +323,21 @@ int main(int argc, char* argv[]) {
     }
 
     std::unique_ptr<AdcSampler> adc_sampler;
+    std::unique_ptr<CallerIdDetector> caller_id_detector;
     if (adc_config.enabled) {
         adc_sampler = std::make_unique<AdcSampler>(adc_config);
         adc_sampler->start();
+        caller_id_detector = std::make_unique<CallerIdDetector>(adc_sampler.get(), context);
+        caller_id_detector->start();
     }
+
+    if (ch1817_driver) ch1817_driver->start();
+    if (ht9032_driver) ht9032_driver->start();
 
     GpioManager gpio_mgr(registry, reserved_gpio);
     gpio_mgr.start(context->timeout_ms);
 
-    WebServer web_server(registry, config_mgr, gpio_mgr, context, adc_sampler.get(), reserved_gpio);
+    WebServer web_server(registry, config_mgr, gpio_mgr, context, adc_sampler.get(), caller_id_detector.get(), ch1817_driver.get(), ht9032_driver.get(), reserved_gpio);
     
     std::cout << "=====================================================" << std::endl;
     std::cout << "Starting Modular CM4 GPIO" << (adc_config.enabled ? " + MCP3202" : " Full-Control")
@@ -340,6 +374,9 @@ int main(int argc, char* argv[]) {
 
     web_server.listen(listen_host, listen_port);
 
+    if (caller_id_detector) caller_id_detector->stop();
+    if (ht9032_driver) ht9032_driver->stop();
+    if (ch1817_driver) ch1817_driver->stop();
     if (adc_sampler) adc_sampler->stop();
     gpio_mgr.stop();
     return 0;
