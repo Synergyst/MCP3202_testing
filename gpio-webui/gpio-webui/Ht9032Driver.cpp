@@ -40,8 +40,8 @@ void Ht9032Driver::validate(const Ht9032Settings& s) {
     std::map<std::string,int> pins;
     if (s.pdwn_control) pins["PDWN"] = s.pdwn_phys;
     pins["CDET"] = s.cdet_phys;
-    if (s.monitor_mode == "both" || s.monitor_mode == "dout") pins["DOUT"] = s.dout_phys;
-    if (s.monitor_mode == "both" || s.monitor_mode == "doutc") pins["DOUTC"] = s.doutc_phys;
+    pins["DOUT"] = s.dout_phys;
+    pins["DOUTC"] = s.doutc_phys;
     if (s.rdet_phys > 0) pins["RDET"] = s.rdet_phys;
     requireDistinctEnabledPins("HT9032C", pins);
     if (s.monitor_mode != "both" && s.monitor_mode != "dout" && s.monitor_mode != "doutc") {
@@ -72,8 +72,8 @@ Ht9032Settings Ht9032Driver::settingsFromJson(const json& j, const Ht9032Setting
 json Ht9032Driver::settingsToJson(const Ht9032Settings& s) {
     auto bcm = [](int p){ return p > 0 ? bcmForPhysicalPin(p) : -1; };
     return {{"enabled",s.enabled},{"pdwn_phys",s.pdwn_phys},{"pdwn_bcm",s.pdwn_control?bcm(s.pdwn_phys):-1},{"cdet_phys",s.cdet_phys},{"cdet_bcm",bcm(s.cdet_phys)},
-            {"dout_phys",s.dout_phys},{"dout_bcm",(s.monitor_mode=="both"||s.monitor_mode=="dout")?bcm(s.dout_phys):-1},
-            {"doutc_phys",s.doutc_phys},{"doutc_bcm",(s.monitor_mode=="both"||s.monitor_mode=="doutc")?bcm(s.doutc_phys):-1},
+            {"dout_phys",s.dout_phys},{"dout_bcm",bcm(s.dout_phys)},
+            {"doutc_phys",s.doutc_phys},{"doutc_bcm",bcm(s.doutc_phys)},
             {"rdet_phys",s.rdet_phys},{"rdet_bcm",s.rdet_phys>0?bcm(s.rdet_phys):-1},{"pdwn_control",s.pdwn_control},{"powered",s.powered},
             {"active_low_cdet",s.active_low_cdet},{"active_low_rdet",s.active_low_rdet},{"monitor_mode",s.monitor_mode},{"baud",s.baud}};
 }
@@ -106,8 +106,8 @@ std::set<int> Ht9032Driver::reservedBcms() const {
     auto s = settings(); std::set<int> out; if (!s.enabled) return out;
     if (s.pdwn_control) out.insert(bcmForPhysicalPin(s.pdwn_phys));
     out.insert(bcmForPhysicalPin(s.cdet_phys));
-    if (s.monitor_mode == "both" || s.monitor_mode == "dout") out.insert(bcmForPhysicalPin(s.dout_phys));
-    if (s.monitor_mode == "both" || s.monitor_mode == "doutc") out.insert(bcmForPhysicalPin(s.doutc_phys));
+    out.insert(bcmForPhysicalPin(s.dout_phys));
+    out.insert(bcmForPhysicalPin(s.doutc_phys));
     if (s.rdet_phys > 0) out.insert(bcmForPhysicalPin(s.rdet_phys));
     return out;
 }
@@ -115,8 +115,8 @@ std::set<int> Ht9032Driver::reservedBcms() const {
 void Ht9032Driver::updateFromJson(const json& j) {
     std::lock_guard<std::mutex> lock(mtx_);
     Ht9032Settings next = settingsFromJson(j, settings_);
-    bool pin_change = next.enabled != settings_.enabled || next.pdwn_phys != settings_.pdwn_phys || next.cdet_phys != settings_.cdet_phys || next.dout_phys != settings_.dout_phys || next.doutc_phys != settings_.doutc_phys || next.rdet_phys != settings_.rdet_phys || next.monitor_mode != settings_.monitor_mode || next.pdwn_control != settings_.pdwn_control;
-    if (pin_change && running_) throw std::runtime_error("HT9032C pin mapping / monitor-mode changes require a server restart so GPIO lines can be safely re-requested. Runtime changes allowed: powered, active-low flags, baud. " + gpioHelpText());
+    bool pin_change = next.enabled != settings_.enabled || next.pdwn_phys != settings_.pdwn_phys || next.cdet_phys != settings_.cdet_phys || next.dout_phys != settings_.dout_phys || next.doutc_phys != settings_.doutc_phys || next.rdet_phys != settings_.rdet_phys || next.pdwn_control != settings_.pdwn_control;
+    if (pin_change && running_) throw std::runtime_error("HT9032C pin mapping changes require a server restart so GPIO lines can be safely re-requested. Runtime changes allowed: monitor_mode, powered, active-low flags, baud. " + gpioHelpText());
     settings_ = next; status_ = "settings updated"; saveLocked();
 }
 
@@ -184,8 +184,8 @@ void Ht9032Driver::worker() {
         if(cfg.pdwn_control){ pdwn=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.pdwn_phys))); pdwn->request({"ht9032_pdwn",gpiod::line_request::DIRECTION_OUTPUT,0}, cfg.powered?0:1); rq_pdwn=true; }
         cdet=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.cdet_phys))); cdet->request({"ht9032_cdet",gpiod::line_request::DIRECTION_INPUT,0}); rq_cdet=true;
         if(cfg.rdet_phys>0){ rdet=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.rdet_phys))); rdet->request({"ht9032_rdet",gpiod::line_request::DIRECTION_INPUT,0}); rq_rdet=true; }
-        if(cfg.monitor_mode=="both"||cfg.monitor_mode=="dout"){ dout=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.dout_phys))); dout->request({"ht9032_dout",gpiod::line_request::DIRECTION_INPUT,0}); rq_dout=true; }
-        if(cfg.monitor_mode=="both"||cfg.monitor_mode=="doutc"){ doutc=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.doutc_phys))); doutc->request({"ht9032_doutc",gpiod::line_request::DIRECTION_INPUT,0}); rq_doutc=true; }
+        dout=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.dout_phys))); dout->request({"ht9032_dout",gpiod::line_request::DIRECTION_INPUT,0}); rq_dout=true;
+        doutc=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.doutc_phys))); doutc->request({"ht9032_doutc",gpiod::line_request::DIRECTION_INPUT,0}); rq_doutc=true;
         while(running_) {
             Ht9032Settings s; { std::lock_guard<std::mutex> lock(mtx_); s=settings_; }
             if(pdwn) pdwn->set_value(s.powered?0:1);
@@ -193,7 +193,7 @@ void Ht9032Driver::worker() {
             bool rl=true, ring=false; if(rdet){ rl=rdet->get_value(); ring=s.active_low_rdet ? !rl : rl; }
             bool dl=true,dcl=true; if(dout) dl=dout->get_value(); if(doutc) dcl=doutc->get_value();
             auto now=std::chrono::steady_clock::now();
-            { std::lock_guard<std::mutex> lock(mtx_); pdwn_level_=s.pdwn_control ? !s.powered : false; cdet_level_=cl; carrier_=car; rdet_level_=rl; ring_detect_=ring; dout_level_=dl; doutc_level_=dcl; samples_++; if(car){ feedSerialLocked(dout_,dl,now,s.baud); feedSerialLocked(doutc_,dcl,now,s.baud); status_="carrier present"; } else { resetDecodeLocked(dout_); resetDecodeLocked(doutc_); status_="waiting for carrier"; } }
+            { std::lock_guard<std::mutex> lock(mtx_); pdwn_level_=s.pdwn_control ? !s.powered : false; cdet_level_=cl; carrier_=car; rdet_level_=rl; ring_detect_=ring; dout_level_=dl; doutc_level_=dcl; dout_.enabled=(s.monitor_mode=="both"||s.monitor_mode=="dout"); doutc_.enabled=(s.monitor_mode=="both"||s.monitor_mode=="doutc"); samples_++; if(car){ feedSerialLocked(dout_,dl,now,s.baud); feedSerialLocked(doutc_,dcl,now,s.baud); status_="carrier present"; } else { resetDecodeLocked(dout_); resetDecodeLocked(doutc_); status_="waiting for carrier"; } }
             std::this_thread::sleep_for(std::chrono::microseconds(200));
         }
     } catch(const std::exception& e) { std::lock_guard<std::mutex> lock(mtx_); last_error_=e.what(); status_="error"; }

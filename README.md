@@ -18,31 +18,107 @@ The MCP3202 is a 12-bit, dual-channel ADC with an SPI serial interface and two s
 
 ## Current default hardware map
 
+### Numbering convention: physical vs BCM vs WiringPi/Pi4J
+
+This project is deliberately documented with **two** pin-numbering systems only:
+
+```text
+PHYS = physical 40-pin header position, 1 through 40
+BCM  = raw Broadcom GPIO number used by Linux, libgpiod, raspi-gpio, and this program's *_bcm options
+```
+
+Some online diagrams, including WiringPi/Pi4J diagrams, show a third numbering system. Those numbers are useful for those libraries but **are not raw BCM GPIO numbers**. Do not pass WiringPi/Pi4J GPIO numbers to this program's `--gpio-bcm`, `--adc-cs-bcm`, `--adc-clk-bcm`, `--adc-mosi-bcm`, `--adc-miso-bcm`, or JSON `*_bcm` fields.
+
+Use this translation table when comparing different diagrams:
+
+```text
+Physical header pin -> raw BCM GPIO -> common WiringPi/Pi4J GPIO# label
+
+PHYS  3 -> BCM2  -> WiringPi/Pi4J GPIO# 8
+PHYS  5 -> BCM3  -> WiringPi/Pi4J GPIO# 9
+PHYS  7 -> BCM4  -> WiringPi/Pi4J GPIO# 7
+PHYS  8 -> BCM14 -> WiringPi/Pi4J GPIO# 15
+PHYS 10 -> BCM15 -> WiringPi/Pi4J GPIO# 16
+PHYS 11 -> BCM17 -> WiringPi/Pi4J GPIO# 0
+PHYS 12 -> BCM18 -> WiringPi/Pi4J GPIO# 1
+PHYS 13 -> BCM27 -> WiringPi/Pi4J GPIO# 2
+PHYS 15 -> BCM22 -> WiringPi/Pi4J GPIO# 3
+PHYS 16 -> BCM23 -> WiringPi/Pi4J GPIO# 4
+PHYS 18 -> BCM24 -> WiringPi/Pi4J GPIO# 5
+PHYS 19 -> BCM10 -> WiringPi/Pi4J GPIO# 12
+PHYS 21 -> BCM9  -> WiringPi/Pi4J GPIO# 13
+PHYS 22 -> BCM25 -> WiringPi/Pi4J GPIO# 6
+PHYS 23 -> BCM11 -> WiringPi/Pi4J GPIO# 14
+PHYS 24 -> BCM8  -> WiringPi/Pi4J GPIO# 10
+PHYS 26 -> BCM7  -> WiringPi/Pi4J GPIO# 11
+PHYS 27 -> BCM0  -> WiringPi/Pi4J GPIO# 30
+PHYS 28 -> BCM1  -> WiringPi/Pi4J GPIO# 31
+PHYS 29 -> BCM5  -> WiringPi/Pi4J GPIO# 21
+PHYS 31 -> BCM6  -> WiringPi/Pi4J GPIO# 22
+PHYS 32 -> BCM12 -> WiringPi/Pi4J GPIO# 26
+PHYS 33 -> BCM13 -> WiringPi/Pi4J GPIO# 23
+PHYS 35 -> BCM19 -> WiringPi/Pi4J GPIO# 24
+PHYS 36 -> BCM16 -> WiringPi/Pi4J GPIO# 27
+PHYS 37 -> BCM26 -> WiringPi/Pi4J GPIO# 25
+PHYS 38 -> BCM20 -> WiringPi/Pi4J GPIO# 28
+PHYS 40 -> BCM21 -> WiringPi/Pi4J GPIO# 29
+```
+
+Quick rule:
+
+```text
+If the option or JSON key says "phys", use the physical header pin number.
+If the option or JSON key says "bcm", use the raw Broadcom number.
+Never use WiringPi/Pi4J GPIO# values unless you are translating them first.
+```
+
 ### Raspberry Pi 40-pin header summary
 
 ```text
-Raspberry Pi 40-pin header, top view
+Raspberry Pi 40-pin header, top view, raw BCM labels
 
   3V3  (1) (2)  5V
- GPIO2 (3) (4)  5V
- GPIO3 (5) (6)  GND
- GPIO4 (7) (8)  GPIO14
-   GND (9) (10) GPIO15
-GPIO17 (11)(12) GPIO18
-GPIO27 (13)(14) GND
-GPIO22 (15)(16) GPIO23
-  3V3 (17)(18) GPIO24
-GPIO10 (19)(20) GND
- GPIO9 (21)(22) GPIO25
-GPIO11 (23)(24) GPIO8
-   GND (25)(26) GPIO7
- GPIO0 (27)(28) GPIO1
- GPIO5 (29)(30) GND
- GPIO6 (31)(32) GPIO12
-GPIO13 (33)(34) GND
-GPIO19 (35)(36) GPIO16
-GPIO26 (37)(38) GPIO20
-   GND (39)(40) GPIO21
+ BCM2  (3) (4)  5V
+ BCM3  (5) (6)  GND
+ BCM4  (7) (8)  BCM14
+   GND (9) (10) BCM15
+ BCM17 (11)(12) BCM18
+ BCM27 (13)(14) GND
+ BCM22 (15)(16) BCM23
+  3V3 (17)(18) BCM24
+ BCM10(19)(20) GND
+ BCM9 (21)(22) BCM25
+ BCM11(23)(24) BCM8
+   GND (25)(26) BCM7
+ BCM0 (27)(28) BCM1
+ BCM5 (29)(30) GND
+ BCM6 (31)(32) BCM12
+ BCM13(33)(34) GND
+ BCM19(35)(36) BCM16
+ BCM26(37)(38) BCM20
+   GND (39)(40) BCM21
+```
+
+### Project default pin assignments with alternate labels
+
+This is the most important table for this project:
+
+```text
+Signal                 PHYS pin   raw BCM   WiringPi/Pi4J label   Program setting
+---------------------------------------------------------------------------------
+MCP3202 CS/SHDN        24         BCM8      GPIO# 10              --adc-cs-bcm 8
+MCP3202 CLK/SCLK       23         BCM11     GPIO# 14              --adc-clk-bcm 11
+MCP3202 DIN/MOSI       19         BCM10     GPIO# 12              --adc-mosi-bcm 10
+MCP3202 DOUT/MISO      21         BCM9      GPIO# 13              --adc-miso-bcm 9
+
+CH1817 OFFHK           32         BCM12     GPIO# 26              ch1817.offhook_phys=32
+CH1817 RI              40         BCM21     GPIO# 29              ch1817.ri_phys=40
+
+HT9032C PDWN           36         BCM16     GPIO# 27              ht9032.pdwn_phys=36
+HT9032C CDET           37         BCM26     GPIO# 25              ht9032.cdet_phys=37
+HT9032C DOUT           15         BCM22     GPIO# 3               ht9032.dout_phys=15
+HT9032C DOUTC          38         BCM20     GPIO# 28              ht9032.doutc_phys=38
+HT9032C RDET optional  unused     unused    unused                ht9032.rdet_phys=0
 ```
 
 ### MCP3202 ADC wiring
@@ -60,6 +136,15 @@ PHYS 19 / BCM10 / SPI0 MOSI        ---------> DIN     pin 5
 PHYS 21 / BCM9  / SPI0 MISO        <--------- DOUT    pin 6
 Analog source CH0                  ---------> CH0     pin 2
 Analog source CH1                  ---------> CH1     pin 3
+```
+
+Same ADC wiring, shown with WiringPi/Pi4J labels for diagram cross-reference only:
+
+```text
+MCP3202 CS/SHDN  -> PHYS 24 -> raw BCM8  -> WiringPi/Pi4J GPIO# 10
+MCP3202 CLK      -> PHYS 23 -> raw BCM11 -> WiringPi/Pi4J GPIO# 14
+MCP3202 DIN      -> PHYS 19 -> raw BCM10 -> WiringPi/Pi4J GPIO# 12
+MCP3202 DOUT     -> PHYS 21 -> raw BCM9  -> WiringPi/Pi4J GPIO# 13
 ```
 
 ASCII block diagram:
@@ -82,7 +167,7 @@ ASCII block diagram:
 
 The MCP3202 uses `VDD` as the ADC reference, so a channel tied to 3.3 V should read near full-scale, about `4095`, when `VDD/VREF` is also 3.3 V [1]. Communication is SPI-compatible and the MCP3202 supports SPI modes 0,0 and 1,1 [1]. The `CS/SHDN` pin initiates communication when pulled low and must be pulled high between conversions [1].
 
-Important implementation detail: hardware SPI mode automatically restores SPI0 pins BCM9/10/11 to ALT0 before opening `/dev/spidev0.x`. This prevents a previous GPIO/bit-bang test from leaving the SPI pins as plain GPIO and causing all-zero ADC reads.
+Important implementation detail: hardware SPI mode automatically restores SPI0 pins BCM9/10/11 to ALT0 before opening `/dev/spidev0.x`. This prevents a previous GPIO/bit-bang test from leaving the SPI pins as plain GPIO and causing all-zero ADC reads. BCM8 remains a normal GPIO output when `--adc-cs-bcm 8` is used because the application directly drives MCP3202 CS.
 
 ### CH1817 DAA wiring
 
@@ -95,6 +180,13 @@ GND                                ---------> GND
 5V or board supply                 ---------> VCC, according to your board design
 CH1817 RCV                         ---------> ADC/audio conditioning path
 TIP/RING                           <--------> telephone line interface
+```
+
+Same CH1817 wiring, shown with WiringPi/Pi4J labels for diagram cross-reference only:
+
+```text
+CH1817 OFFHK -> PHYS 32 -> raw BCM12 -> WiringPi/Pi4J GPIO# 26
+CH1817 RI    -> PHYS 40 -> raw BCM21 -> WiringPi/Pi4J GPIO# 29
 ```
 
 ASCII block diagram:
@@ -145,6 +237,16 @@ optional unused by default         <--------- RDET
 GND                                ---------> VSS
 3.3V or board supply               ---------> VDD, according to your board design
 TIP/RING FSK input network          --------> TIP/RING inputs
+```
+
+Same HT9032C wiring, shown with WiringPi/Pi4J labels for diagram cross-reference only:
+
+```text
+HT9032C PDWN  -> PHYS 36 -> raw BCM16 -> WiringPi/Pi4J GPIO# 27
+HT9032C CDET  -> PHYS 37 -> raw BCM26 -> WiringPi/Pi4J GPIO# 25
+HT9032C DOUT  -> PHYS 15 -> raw BCM22 -> WiringPi/Pi4J GPIO# 3
+HT9032C DOUTC -> PHYS 38 -> raw BCM20 -> WiringPi/Pi4J GPIO# 28
+HT9032C RDET  -> unused by default; set ht9032.rdet_phys only if wired
 ```
 
 ASCII block diagram:
@@ -409,7 +511,7 @@ ht9032_dout
 ht9032_doutc
 ```
 
-Runtime `powered` changes are allowed. Pin-map and monitor-mode changes require restart so GPIO lines can be safely released and re-requested.
+Runtime `monitor_mode`, `powered`, active-low flag, and baud changes are allowed. HT9032C physical pin-map changes still require restart so GPIO lines can be safely released and re-requested.
 
 ---
 
@@ -590,7 +692,7 @@ Rules:
 - Enabled chip signals must not share the same physical pin.
 - Reserved chip pins are hidden from generic GPIO control.
 - CH1817 pin mapping changes require restart.
-- HT9032C pin mapping and monitor-mode changes require restart.
+- HT9032C physical pin mapping changes require restart; HT9032C `monitor_mode`, `powered`, active-low flag, and baud changes can be applied at runtime.
 - Runtime HT9032C power changes are allowed.
 - Runtime CH1817 off-hook and auto-answer changes are allowed.
 

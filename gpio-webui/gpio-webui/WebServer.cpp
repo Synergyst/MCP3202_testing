@@ -184,10 +184,10 @@ const char* HTML_UI = R"html(
     </div>
 
     <div class="card cid-card" id="htCard">
-        <div class="card-header"><div><span class="pin-title">HT9032C Caller ID Receiver</span><span class="bcm-tag">CDET + DOUT + DOUTC</span></div><span class="status-pill" id="htStatus">-</span></div>
+        <div class="card-header"><div><span class="pin-title">HT9032C Caller ID Receiver</span><span class="bcm-tag">CDET + RDET + DOUT + DOUTC</span></div><span class="status-pill" id="htStatus">-</span></div>
         <div class="cid-grid">
-            <div class="cid-item">Carrier CDET<b id="htCarrier">-</b></div><div class="cid-item">PDWN/Power<b id="htPower">-</b></div><div class="cid-item">DOUT level<b id="htDoutLevel">-</b></div><div class="cid-item">DOUTC level<b id="htDoutcLevel">-</b></div>
-            <div class="cid-item">DOUT decoded<b id="htDoutDecoded">-</b></div><div class="cid-item">DOUTC decoded<b id="htDoutcDecoded">-</b></div>
+            <div class="cid-item">Carrier CDET<b id="htCarrier">-</b></div><div class="cid-item">Ring RDET<b id="htRing">-</b></div><div class="cid-item">PDWN/Power<b id="htPower">-</b></div><div class="cid-item">RDET level<b id="htRdetLevel">-</b></div>
+            <div class="cid-item">DOUT level<b id="htDoutLevel">-</b></div><div class="cid-item">DOUTC level<b id="htDoutcLevel">-</b></div><div class="cid-item">DOUT decoded<b id="htDoutDecoded">-</b></div><div class="cid-item">DOUTC decoded<b id="htDoutcDecoded">-</b></div>
         </div>
         <div class="config-panel record-panel cid-tune">
             <label>FSK result source <select id="fskSource"><option value="auto">Auto best</option><option value="software_adc">Software ADC</option><option value="ht9032_dout">HT9032 DOUT</option><option value="ht9032_doutc">HT9032 DOUTC</option></select></label><button onclick="applyFskSource()">Apply Source</button>
@@ -408,10 +408,11 @@ const char* HTML_UI = R"html(
             try {
                 const res = await fetch('/api/ht9032'); const data = await res.json();
                 const st = document.getElementById('htStatus'); st.textContent = data.carrier ? 'CARRIER' : (data.status || '-').toUpperCase(); st.className = `status-pill ${data.carrier ? 'status-ok' : 'status-bad'}`;
-                document.getElementById('htCarrier').textContent = data.carrier ? 'present' : 'absent'; document.getElementById('htPower').textContent = data.settings?.pdwn_control ? (data.powered ? 'powered' : 'power-down') : 'PDWN not controlled'; document.getElementById('htDoutLevel').textContent = data.dout_level ? 'HIGH' : 'LOW'; document.getElementById('htDoutcLevel').textContent = data.doutc_level ? 'HIGH' : 'LOW';
+                const rdetWired = (data.settings?.rdet_phys || 0) > 0;
+                document.getElementById('htCarrier').textContent = data.carrier ? 'present' : 'absent'; document.getElementById('htRing').textContent = rdetWired ? (data.ring_detect ? 'detected' : 'absent') : 'not wired'; document.getElementById('htPower').textContent = data.settings?.pdwn_control ? (data.powered ? 'powered' : 'power-down') : 'PDWN not controlled'; document.getElementById('htRdetLevel').textContent = rdetWired ? (data.rdet_level ? 'HIGH' : 'LOW') : '-'; document.getElementById('htDoutLevel').textContent = data.dout_level ? 'HIGH' : 'LOW'; document.getElementById('htDoutcLevel').textContent = data.doutc_level ? 'HIGH' : 'LOW';
                 document.getElementById('htDoutDecoded').textContent = data.dout?.decoded ? `${data.dout.number||''} ${data.dout.checksum_ok?'OK':'BAD'}` : (data.dout?.status || '-'); document.getElementById('htDoutcDecoded').textContent = data.doutc?.decoded ? `${data.doutc.number||''} ${data.doutc.checksum_ok?'OK':'BAD'}` : (data.doutc?.status || '-');
                 if (document.activeElement?.id !== 'htMonitor' && document.activeElement?.id !== 'htPowered') { document.getElementById('htMonitor').value = data.settings?.monitor_mode || 'both'; document.getElementById('htPowered').checked = data.settings?.powered !== false; }
-                document.getElementById('htRaw').textContent = `DOUT bytes: ${data.dout?.bytes_hex || '-'}\nDOUT bits: ${data.dout?.bits || '-'}\n\nDOUTC bytes: ${data.doutc?.bytes_hex || '-'}\nDOUTC bits: ${data.doutc?.bits || '-'}`; document.getElementById('htHelp').textContent = data.last_error || data.help || '';
+                document.getElementById('htRaw').textContent = `RDET: ${rdetWired ? (data.ring_detect ? 'detected' : 'absent') : 'not wired'} / level ${rdetWired ? (data.rdet_level ? 'HIGH' : 'LOW') : '-'} / PHYS ${data.settings?.rdet_phys ?? 0} / BCM ${data.settings?.rdet_bcm ?? -1}\nCDET: ${data.carrier ? 'carrier present' : 'carrier absent'} / level ${data.cdet_level ? 'HIGH' : 'LOW'}\n\nDOUT bytes: ${data.dout?.bytes_hex || '-'}\nDOUT bits: ${data.dout?.bits || '-'}\n\nDOUTC bytes: ${data.doutc?.bytes_hex || '-'}\nDOUTC bits: ${data.doutc?.bits || '-'}`; document.getElementById('htHelp').textContent = data.last_error || data.help || '';
             } catch(err) { document.getElementById('htHelp').textContent = `HT9032 error: ${err.message || err}`; }
         }
 
