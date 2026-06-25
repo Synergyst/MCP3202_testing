@@ -12,7 +12,7 @@ ifeq ($(HAVE_RNNOISE),1)
 LDFLAGS += $(RNNOISE_LIBS)
 endif
 TARGET = cm4_gpio_server
-OBJS = main.o ConfigManager.o GpioManager.o WebServer.o MCP3202.o AdcSampler.o AudioProcessing.o CallerIdDetector.o Ch1817Driver.o Ht9032Driver.o
+OBJS = main.o ConfigManager.o GpioManager.o WebServer.o MCP3202.o AdcSampler.o AudioProcessing.o CallerIdDetector.o Ch1817Driver.o
 
 all: rnnoise-status $(TARGET)
 
@@ -26,7 +26,7 @@ endif
 $(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) -I. -o $(TARGET) $(OBJS) $(LDFLAGS)
 
-main.o: main.cpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp WebServer.hpp SystemContext.hpp AdcSampler.hpp MCP3202.hpp CallerIdDetector.hpp Ch1817Driver.hpp Ht9032Driver.hpp HeaderPins.hpp httplib.h
+main.o: main.cpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp WebServer.hpp SystemContext.hpp AdcSampler.hpp MCP3202.hpp CallerIdDetector.hpp Ch1817Driver.hpp HeaderPins.hpp httplib.h
 	$(CXX) $(CXXFLAGS) -I. -c main.cpp -o main.o
 
 ConfigManager.o: ConfigManager.cpp ConfigManager.hpp PinConfig.hpp
@@ -50,10 +50,8 @@ CallerIdDetector.o: CallerIdDetector.cpp CallerIdDetector.hpp AdcSampler.hpp Sys
 Ch1817Driver.o: Ch1817Driver.cpp Ch1817Driver.hpp SystemContext.hpp HeaderPins.hpp
 	$(CXX) $(CXXFLAGS) -I. -c Ch1817Driver.cpp -o Ch1817Driver.o
 
-Ht9032Driver.o: Ht9032Driver.cpp Ht9032Driver.hpp SystemContext.hpp HeaderPins.hpp
-	$(CXX) $(CXXFLAGS) -I. -c Ht9032Driver.cpp -o Ht9032Driver.o
 
-WebServer.o: WebServer.cpp WebServer.hpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp SystemContext.hpp AdcSampler.hpp MCP3202.hpp AudioProcessing.hpp CallerIdDetector.hpp Ch1817Driver.hpp Ht9032Driver.hpp httplib.h
+WebServer.o: WebServer.cpp WebServer.hpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp SystemContext.hpp AdcSampler.hpp MCP3202.hpp AudioProcessing.hpp CallerIdDetector.hpp Ch1817Driver.hpp httplib.h
 	$(CXX) $(CXXFLAGS) -I. -c WebServer.cpp -o WebServer.o
 
 clean:

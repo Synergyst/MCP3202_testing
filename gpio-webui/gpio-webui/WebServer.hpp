@@ -10,7 +10,6 @@
 #include "AdcSampler.hpp"
 #include "CallerIdDetector.hpp"
 #include "Ch1817Driver.hpp"
-#include "Ht9032Driver.hpp"
 
 class WebServer {
 public:
@@ -21,14 +20,13 @@ public:
               AdcSampler* adc_sampler = nullptr,
               CallerIdDetector* caller_id_detector = nullptr,
               Ch1817Driver* ch1817_driver = nullptr,
-              Ht9032Driver* ht9032_driver = nullptr,
               std::set<int> reserved_bcm_pins = {});
     void listen(const std::string& host, int port);
 
 private:
     void setup_routes();
     std::string serialize_state();
-    std::string serialize_adc_scope(size_t max_points);
+    std::string serialize_adc_scope(size_t max_points, const std::string& view = "raw", const std::string& effects_csv = "");
     std::string build_adc_wav(const std::string& mode, size_t duration_ms, const std::string& effects_csv, const std::string& codec, std::string& filename, std::string& content_type);
 
     httplib::Server svr;
@@ -39,6 +37,5 @@ private:
     AdcSampler* adc_sampler;
     CallerIdDetector* caller_id_detector;
     Ch1817Driver* ch1817_driver;
-    Ht9032Driver* ht9032_driver;
     std::set<int> reserved_bcm_pins;
 };

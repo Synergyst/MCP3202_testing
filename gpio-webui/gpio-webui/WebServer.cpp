@@ -13,6 +13,7 @@
 #include <cmath>
 #include <fstream>
 #include <vector>
+#include <cctype>
 
 using json = nlohmann::json;
 
@@ -26,7 +27,7 @@ std::string readFskSourceSetting(const std::shared_ptr<SystemContext>& context) 
     }
     if (!j.is_object()) j = json::object();
     std::string src = j.value("fsk_source", "auto");
-    if (src != "auto" && src != "software_adc" && src != "ht9032_dout" && src != "ht9032_doutc") src = "auto";
+    if (src != "auto" && src != "software_adc") src = "auto";
     return src;
 }
 
@@ -44,46 +45,151 @@ json disabledCallerIdJson(const std::string& source, const std::string& reason) 
             {"message_type", ""}, {"raw_bits", ""}, {"raw_bytes_hex", ""}};
 }
 
-json htLineToCallerIdJson(const json& ht, const std::string& key, const std::string& source) {
-    if (!ht.value("enabled", false)) return disabledCallerIdJson(source, "HT9032 disabled");
-    const json line = ht.contains(key) && ht[key].is_object() ? ht[key] : json::object();
-    const bool decoded = line.value("decoded", false);
-    const bool checksum = line.value("checksum_ok", false);
-    const double confidence = line.value("confidence", decoded ? (checksum ? 1.0 : 0.70) : 0.0);
-    std::string label = source == "ht9032_doutc" ? "HT9032 DOUTC" : "HT9032 DOUT";
-    return {
-        {"enabled", ht.value("enabled", false)},
-        {"running", ht.value("running", false)},
-        {"detected", decoded},
-        {"checksum_ok", checksum},
-        {"source", source},
-        {"source_label", label},
-        {"total_decodes", decoded ? 1 : 0},
-        {"last_total_frames_seen", ht.value("samples", 0ull)},
-        {"sample_rate_hz", ht.value("settings", json::object()).value("baud", 1200)},
-        {"selected_channel", source == "ht9032_doutc" ? 4 : 3},
-        {"confidence", confidence},
-        {"best_confidence", confidence},
-        {"best_selected_channel", source == "ht9032_doutc" ? 4 : 3},
-        {"status", line.value("status", ht.value("status", "waiting"))},
-        {"message_type", line.value("message_type", "")},
-        {"date_time", line.value("date_time", "")},
-        {"date_time_raw", ""},
-        {"number", line.value("number", "")},
-        {"name", line.value("name", "")},
-        {"raw_bits", line.value("bits", "")},
-        {"raw_bytes_hex", line.value("bytes_hex", "")},
-        {"best_raw_bits", line.value("bits", "")},
-        {"best_raw_bytes_hex", line.value("bytes_hex", "")},
-        {"best_status", line.value("status", "")},
-        {"best_update", ""},
-        {"last_update", ""},
-        {"last_error", ht.value("last_error", "")},
-        {"settings", ht.value("settings", json::object())}
-    };
+std::string trimCopy(const std::string& s) {
+    const auto first = std::find_if_not(s.begin(), s.end(), [](unsigned char c) { return std::isspace(c); });
+    const auto last = std::find_if_not(s.rbegin(), s.rend(), [](unsigned char c) { return std::isspace(c); }).base();
+    if (first >= last) return "";
+    return std::string(first, last);
 }
 
-json selectedCallerIdJson(const std::string& source, CallerIdDetector* cid, Ht9032Driver* ht) {
+std::string lowerCopy(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+std::vector<std::string> splitEffectsCsv(const std::string& csv) {
+    std::vector<std::string> out;
+    std::stringstream ss(csv);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        item = lowerCopy(trimCopy(item));
+        if (item.empty() || item == "none") continue;
+        if (std::find(out.begin(), out.end(), item) == out.end()) out.push_back(item);
+    }
+    return out;
+}
+
+uint16_t clampAdc(double v) {
+    if (v < 0.0) return 0;
+    if (v > 4095.0) return 4095;
+    return static_cast<uint16_t>(std::llround(v));
+}
+
+struct GraphBiquad {
+    double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
+    double z1 = 0.0, z2 = 0.0;
+    double process(double x) {
+        const double y = b0 * x + z1;
+        z1 = b1 * x - a1 * y + z2;
+        z2 = b2 * x - a2 * y;
+        return y;
+    }
+};
+
+GraphBiquad makeGraphBandpass(double sample_rate, double center_hz, double q) {
+    GraphBiquad f;
+    if (sample_rate <= 0.0 || center_hz <= 0.0 || center_hz >= sample_rate * 0.45 || q <= 0.0) return f;
+    const double w0 = 2.0 * M_PI * center_hz / sample_rate;
+    const double alpha = std::sin(w0) / (2.0 * q);
+    const double cosw0 = std::cos(w0);
+    const double a0 = 1.0 + alpha;
+    f.b0 = alpha / a0;
+    f.b1 = 0.0;
+    f.b2 = -alpha / a0;
+    f.a1 = (-2.0 * cosw0) / a0;
+    f.a2 = (1.0 - alpha) / a0;
+    return f;
+}
+
+std::vector<uint16_t> applyGraphEffectsToChannel(const std::vector<uint16_t>& raw, uint32_t sample_rate, const std::string& effects_csv) {
+    if (raw.empty()) return {};
+    std::vector<double> x;
+    x.reserve(raw.size());
+    for (uint16_t s : raw) x.push_back(static_cast<double>(s) - 2048.0);
+
+    const auto effects = splitEffectsCsv(effects_csv);
+    for (const auto& effect : effects) {
+        if (effect == "dc_block") {
+            double mean = 0.0;
+            for (double v : x) mean += v;
+            mean /= static_cast<double>(std::max<size_t>(1, x.size()));
+            for (double& v : x) v -= mean;
+        } else if (effect == "pots_bandpass" || effect == "bell202_bandpass") {
+            const double fs = std::max<double>(1.0, sample_rate);
+            const double hp_cut = (effect == "bell202_bandpass") ? 700.0 : 300.0;
+            const double lp_cut_req = (effect == "bell202_bandpass") ? 2700.0 : 3400.0;
+            const int passes = (effect == "bell202_bandpass") ? 2 : 1;
+            const double lp_cut = std::min(lp_cut_req, fs * 0.45);
+            for (int pass = 0; pass < passes && lp_cut > hp_cut; ++pass) {
+                const double hp_rc = 1.0 / (2.0 * M_PI * hp_cut);
+                const double dt = 1.0 / fs;
+                const double hp_alpha = hp_rc / (hp_rc + dt);
+                const double lp_rc = 1.0 / (2.0 * M_PI * lp_cut);
+                const double lp_alpha = dt / (lp_rc + dt);
+                double hp_y = 0.0, hp_prev_x = 0.0, lp_y = 0.0;
+                for (double& sample : x) {
+                    const double in = sample;
+                    const double yhp = hp_alpha * (hp_y + in - hp_prev_x);
+                    hp_y = yhp;
+                    hp_prev_x = in;
+                    lp_y = lp_y + lp_alpha * (yhp - lp_y);
+                    sample = lp_y;
+                }
+            }
+        } else if (effect == "bell202_dual_tone") {
+            GraphBiquad mark = makeGraphBandpass(std::max<double>(1.0, sample_rate), 1200.0, 8.0);
+            GraphBiquad space = makeGraphBandpass(std::max<double>(1.0, sample_rate), 2200.0, 8.0);
+            for (double& sample : x) sample = (mark.process(sample) + space.process(sample)) * 2.0;
+        } else if (effect == "fsk_squelch") {
+            if (x.size() >= 8) {
+                const size_t win = std::max<size_t>(8, static_cast<size_t>(std::max<uint32_t>(1, sample_rate) / 200));
+                std::vector<double> env(x.size(), 0.0);
+                double sumsq = 0.0;
+                for (size_t i = 0; i < x.size(); ++i) {
+                    sumsq += x[i] * x[i];
+                    if (i >= win) sumsq -= x[i - win] * x[i - win];
+                    env[i] = std::sqrt(std::max(0.0, sumsq / static_cast<double>(std::min(win, i + 1))));
+                }
+                auto sorted = env;
+                std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 3, sorted.end());
+                const double floor = std::max(1.0, sorted[sorted.size() / 3]);
+                const double open = floor * 2.2;
+                const double full = floor * 5.0;
+                for (size_t i = 0; i < x.size(); ++i) {
+                    double gain = 0.18;
+                    if (env[i] >= full) gain = 1.0;
+                    else if (env[i] > open) gain = 0.18 + 0.82 * ((env[i] - open) / std::max(1.0, full - open));
+                    x[i] *= gain;
+                }
+            }
+        } else if (effect == "normalize") {
+            double peak = 0.0;
+            for (double v : x) peak = std::max(peak, std::abs(v));
+            if (peak > 1.0) {
+                const double target = 1800.0;
+                const double gain = target / peak;
+                if (gain > 1.01) for (double& v : x) v *= gain;
+            }
+        } else if (effect == "soft_clip") {
+            constexpr double drive = 1.6;
+            const double denom = std::tanh(drive);
+            for (double& v : x) {
+                const double xn = v / 2048.0;
+                v = (std::tanh(xn * drive) / denom) * 2047.0;
+            }
+        } else if (effect == "rnnoise") {
+            // RNNoise is intentionally skipped for the live graph. It is expensive
+            // and speech-oriented; keep it available for WAV export only.
+        }
+    }
+
+    std::vector<uint16_t> out;
+    out.reserve(x.size());
+    for (double v : x) out.push_back(clampAdc(2048.0 + v));
+    return out;
+}
+
+json selectedCallerIdJson(const std::string& source, CallerIdDetector* cid) {
     auto software = [&]() -> json {
         if (!cid) return disabledCallerIdJson("software_adc", "Software ADC Caller ID detector disabled");
         json out = cid->snapshotJson();
@@ -91,22 +197,9 @@ json selectedCallerIdJson(const std::string& source, CallerIdDetector* cid, Ht90
         out["source_label"] = "Software ADC";
         return out;
     };
-    auto htline = [&](const std::string& key, const std::string& src) -> json {
-        if (!ht) return disabledCallerIdJson(src, "HT9032 driver disabled");
-        return htLineToCallerIdJson(ht->snapshotJson(), key, src);
-    };
 
-    if (source == "software_adc") return software();
-    if (source == "ht9032_dout") return htline("dout", "ht9032_dout");
-    if (source == "ht9032_doutc") return htline("doutc", "ht9032_doutc");
-
-    std::vector<json> candidates;
-    candidates.push_back(software());
-    candidates.push_back(htline("dout", "ht9032_dout"));
-    candidates.push_back(htline("doutc", "ht9032_doutc"));
-    return *std::max_element(candidates.begin(), candidates.end(), [](const json& a, const json& b) {
-        return callerIdScore(a) < callerIdScore(b);
-    });
+    if (source == "auto" || source == "software_adc") return software();
+    return disabledCallerIdJson(source, "Unknown Caller ID source");
 }
 }
 
@@ -204,6 +297,16 @@ const char* HTML_UI = R"html(
         </div>
         <div class="scope-wrap"><canvas id="adcScope" width="1200" height="220"></canvas></div>
         <div class="config-panel record-panel">
+            <label>Graph view:
+                <select id="graphView">
+                    <option value="raw">Raw ADC</option>
+                    <option value="filtered">Filtered preview</option>
+                    <option value="overlay">Raw + filtered overlay</option>
+                </select>
+            </label>
+            <span class="record-help">Filtered/overlay graph uses the selected Effects below without downloading a WAV.</span>
+        </div>
+        <div class="config-panel record-panel">
             <label for="wavDuration">WAV capture:</label>
             <input class="wide" type="number" id="wavDuration" min="1" max="600000" step="100" value="1000">
             <span>ms</span>
@@ -278,19 +381,7 @@ const char* HTML_UI = R"html(
         <div class="tiny" id="chHelp"></div>
     </div>
 
-    <div class="card cid-card" id="htCard">
-        <div class="card-header"><div><span class="pin-title">HT9032C Caller ID Receiver</span><span class="bcm-tag">CDET + RDET + DOUT + DOUTC</span></div><span class="status-pill" id="htStatus">-</span></div>
-        <div class="cid-grid">
-            <div class="cid-item">Carrier CDET<b id="htCarrier">-</b></div><div class="cid-item">Ring RDET<b id="htRing">-</b></div><div class="cid-item">PDWN/Power<b id="htPower">-</b></div><div class="cid-item">RDET level<b id="htRdetLevel">-</b></div>
-            <div class="cid-item">DOUT level<b id="htDoutLevel">-</b></div><div class="cid-item">DOUTC level<b id="htDoutcLevel">-</b></div><div class="cid-item">DOUT decoded<b id="htDoutDecoded">-</b></div><div class="cid-item">DOUTC decoded<b id="htDoutcDecoded">-</b></div>
-        </div>
-        <div class="config-panel record-panel cid-tune">
-            <label>FSK result source <select id="fskSource"><option value="auto">Auto best</option><option value="software_adc">Software ADC</option><option value="ht9032_dout">HT9032 DOUT</option><option value="ht9032_doutc">HT9032 DOUTC</option></select></label><button onclick="applyFskSource()">Apply Source</button>
-            <label>Monitor <select id="htMonitor"><option value="both">DOUT + DOUTC</option><option value="dout">DOUT only</option><option value="doutc">DOUTC only</option></select></label>
-            <label><input type="checkbox" id="htPowered" checked> powered</label><button onclick="applyHt9032Settings()">Apply HT9032</button><span class="record-status" id="htApplyStatus"></span>
-        </div>
-        <div class="cid-raw" id="htRaw">HT9032 raw bits/bytes will appear here.</div><div class="tiny" id="htHelp"></div>
-    </div>
+
 
     <div class="grid" id="pinGrid"></div>
     <script>
@@ -391,7 +482,7 @@ const char* HTML_UI = R"html(
         }
 
         function channelLabel(ch) {
-            return ch === 0 ? 'CH0' : (ch === 1 ? 'CH1' : (ch === 2 ? 'CH0+CH1 mix' : (ch === 3 ? 'HT9032 DOUT' : (ch === 4 ? 'HT9032 DOUTC' : (ch === -1 ? 'Auto' : '-')))));
+            return ch === 0 ? 'CH0' : (ch === 1 ? 'CH1' : (ch === 2 ? 'CH0+CH1 mix' : (ch === -1 ? 'Auto' : '-')));
         }
 
         let cidTuneDirty = false;
@@ -415,6 +506,8 @@ const char* HTML_UI = R"html(
             ['cidTuneChannel','cidTuneMark','cidTuneSpace','cidTuneBaud','cidTuneWindow','cidTuneNormalize','cidTuneHeadroom','cidTuneGain','cidTuneDc'].forEach(id => {
                 const el = document.getElementById(id); if (el) { el.addEventListener('input', markCidTuneDirty); el.addEventListener('change', markCidTuneDirty); }
             });
+            const graphView = document.getElementById('graphView');
+            if (graphView) graphView.addEventListener('change', fetchAdcScope);
         }
 
         async function reloadCallerIdSettings() {
@@ -499,42 +592,22 @@ const char* HTML_UI = R"html(
             catch(err){ st.textContent=`Failed: ${err.message||err}`; alert(`Illegal CH1817 configuration:\n${err.message||err}`); }
         }
 
-        async function fetchHt9032() {
-            try {
-                const res = await fetch('/api/ht9032'); const data = await res.json();
-                const st = document.getElementById('htStatus'); st.textContent = data.carrier ? 'CARRIER' : (data.status || '-').toUpperCase(); st.className = `status-pill ${data.carrier ? 'status-ok' : 'status-bad'}`;
-                const rdetWired = (data.settings?.rdet_phys || 0) > 0;
-                document.getElementById('htCarrier').textContent = data.carrier ? 'present' : 'absent'; document.getElementById('htRing').textContent = rdetWired ? (data.ring_detect ? 'detected' : 'absent') : 'not wired'; document.getElementById('htPower').textContent = data.settings?.pdwn_control ? (data.powered ? 'powered' : 'power-down') : 'PDWN not controlled'; document.getElementById('htRdetLevel').textContent = rdetWired ? (data.rdet_level ? 'HIGH' : 'LOW') : '-'; document.getElementById('htDoutLevel').textContent = data.dout_level ? 'HIGH' : 'LOW'; document.getElementById('htDoutcLevel').textContent = data.doutc_level ? 'HIGH' : 'LOW';
-                document.getElementById('htDoutDecoded').textContent = data.dout?.decoded ? `${data.dout.number||''} ${data.dout.checksum_ok?'OK':'BAD'}` : (data.dout?.status || '-'); document.getElementById('htDoutcDecoded').textContent = data.doutc?.decoded ? `${data.doutc.number||''} ${data.doutc.checksum_ok?'OK':'BAD'}` : (data.doutc?.status || '-');
-                if (document.activeElement?.id !== 'htMonitor' && document.activeElement?.id !== 'htPowered') { document.getElementById('htMonitor').value = data.settings?.monitor_mode || 'both'; document.getElementById('htPowered').checked = data.settings?.powered !== false; }
-                document.getElementById('htRaw').textContent = `RDET: ${rdetWired ? (data.ring_detect ? 'detected' : 'absent') : 'not wired'} / level ${rdetWired ? (data.rdet_level ? 'HIGH' : 'LOW') : '-'} / PHYS ${data.settings?.rdet_phys ?? 0} / BCM ${data.settings?.rdet_bcm ?? -1}\nCDET: ${data.carrier ? 'carrier present' : 'carrier absent'} / level ${data.cdet_level ? 'HIGH' : 'LOW'}\n\nDOUT bytes: ${data.dout?.bytes_hex || '-'}\nDOUT bits: ${data.dout?.bits || '-'}\n\nDOUTC bytes: ${data.doutc?.bytes_hex || '-'}\nDOUTC bits: ${data.doutc?.bits || '-'}`; document.getElementById('htHelp').textContent = data.last_error || data.help || '';
-            } catch(err) { document.getElementById('htHelp').textContent = `HT9032 error: ${err.message || err}`; }
-        }
-
-        async function applyHt9032Settings() {
-            const st=document.getElementById('htApplyStatus'); st.textContent='Applying...';
-            try { const res=await fetch('/api/ht9032/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({monitor_mode:document.getElementById('htMonitor').value,powered:document.getElementById('htPowered').checked})}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'failed'); st.textContent='Applied'; fetchHt9032(); }
-            catch(err){ st.textContent=`Failed: ${err.message||err}`; alert(`Illegal HT9032 configuration:\n${err.message||err}`); }
-        }
-
-        async function applyFskSource() {
-            try { const res=await fetch('/api/system/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fsk_source:document.getElementById('fskSource').value})}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'failed'); }
-            catch(err){ alert(`Unable to save FSK source: ${err.message||err}`); }
-        }
 
         async function fetchAdcScope() {
             try {
                 const canvas = document.getElementById('adcScope');
                 const pointBudget = Math.max(300, Math.min(2400, canvas.clientWidth * 2));
-                const res = await fetch(`/api/adc?points=${pointBudget}`);
+                const view = document.getElementById('graphView')?.value || 'raw';
+                const effects = selectedEffectsCsv();
+                const res = await fetch(`/api/adc?points=${pointBudget}&view=${encodeURIComponent(view)}&effects=${encodeURIComponent(effects)}`);
                 const data = await res.json();
                 updateAdcHeader(data);
-                drawScope((data.samples && data.samples.ch0) || [], (data.samples && data.samples.ch1) || []);
+                drawScope(data);
             } catch (err) {
                 const status = document.getElementById('adcStatus');
-                status.textContent = 'ERROR';
+                status.textContent = 'ADC ERROR';
                 status.className = 'status-pill status-bad';
-                document.getElementById('adcErr').textContent = err;
+                document.getElementById('adcErr').textContent = String(err);
             }
         }
 
@@ -555,7 +628,13 @@ const char* HTML_UI = R"html(
             document.getElementById('adcErr').textContent = data.last_error || '';
         }
 
-        function drawScope(samples0, samples1) {
+        function drawScope(data) {
+            const samples0 = (data.samples && data.samples.ch0) || [];
+            const samples1 = (data.samples && data.samples.ch1) || [];
+            const filt0 = (data.filtered_samples && data.filtered_samples.ch0) || [];
+            const filt1 = (data.filtered_samples && data.filtered_samples.ch1) || [];
+            const view = data.graph_view || document.getElementById('graphView')?.value || 'raw';
+
             const canvas = document.getElementById('adcScope');
             const dpr = window.devicePixelRatio || 1;
             const w = Math.max(300, canvas.clientWidth || 1200);
@@ -579,20 +658,30 @@ const char* HTML_UI = R"html(
             ctx.strokeStyle = 'rgba(255,255,255,0.25)';
             ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(w, midY); ctx.stroke();
 
-            if (!samples0.length && !samples1.length) {
+            if (!samples0.length && !samples1.length && !filt0.length && !filt1.length) {
                 ctx.fillStyle = '#777';
                 ctx.fillText('Waiting for MCP3202 samples...', 14, 24);
                 return;
             }
 
-            drawTrace(ctx, samples0, w, h, '#00ff87', 1.45);
-            drawTrace(ctx, samples1, w, h, '#ffcf33', 1.25);
+            if (view === 'overlay' && (filt0.length || filt1.length)) {
+                drawTrace(ctx, samples0, w, h, 'rgba(0,255,135,0.32)', 1.0);
+                drawTrace(ctx, samples1, w, h, 'rgba(255,207,51,0.32)', 1.0);
+                drawTrace(ctx, filt0, w, h, '#00ff87', 1.8);
+                drawTrace(ctx, filt1, w, h, '#ffcf33', 1.6);
+            } else {
+                drawTrace(ctx, samples0, w, h, '#00ff87', 1.45);
+                drawTrace(ctx, samples1, w, h, '#ffcf33', 1.25);
+            }
 
             ctx.fillStyle = '#8df7ff';
             ctx.font = '12px monospace';
             ctx.fillText(`0`, 6, h - 6);
             ctx.fillText(`2048`, 6, midY - 6);
             ctx.fillText(`4095`, 6, 14);
+            let label = view === 'overlay' ? 'overlay: dim=raw bright=filtered' : (view === 'filtered' ? 'filtered preview' : 'raw ADC');
+            if ((data.graph_skipped_effects || []).length) label += ` / skipped live: ${(data.graph_skipped_effects || []).join(',')}`;
+            ctx.fillStyle = '#aaa'; ctx.fillText(label, 80, 16);
             ctx.fillStyle = '#00ff87'; ctx.fillText('CH0', w - 76, 16);
             ctx.fillStyle = '#ffcf33'; ctx.fillText('CH1', w - 38, 16);
         }
@@ -640,6 +729,7 @@ const char* HTML_UI = R"html(
                     input.value = effect.id;
                     input.disabled = !effect.available;
                     if (effect.id === 'dc_block') input.checked = true;
+                    input.addEventListener('change', fetchAdcScope);
                     label.appendChild(input);
                     label.appendChild(document.createTextNode(effect.label || effect.id));
                     effectsList.appendChild(label);
@@ -720,15 +810,15 @@ const char* HTML_UI = R"html(
         const ADC_ENABLED = __ADC_ENABLED__;
         setInterval(fetchStatus, 250);
         if (ADC_ENABLED) { setInterval(fetchAdcScope, 120); setInterval(fetchCallerId, 1000); }
-        setInterval(fetchTelephony, 500); setInterval(fetchHt9032, 500);
-        window.onload = () => { fetchStatus(); wireCallerIdTuneDirty(); if (ADC_ENABLED) { fetchAdcScope(); fetchCallerId(); loadAudioModules(); } fetchTelephony(); fetchHt9032(); fetch('/api/system/settings').then(r=>r.json()).then(d=>{ if(d.fsk_source) document.getElementById('fskSource').value=d.fsk_source; }).catch(()=>{}); };
+        setInterval(fetchTelephony, 500);
+        window.onload = () => { fetchStatus(); wireCallerIdTuneDirty(); if (ADC_ENABLED) { fetchAdcScope(); fetchCallerId(); loadAudioModules(); } fetchTelephony(); };
     </script>
 </body>
 </html>
 )html";
 
-WebServer::WebServer(std::map<int, std::shared_ptr<PinState>>& reg, ConfigManager& cfg, GpioManager& gpio, std::shared_ptr<SystemContext> ctx, AdcSampler* adc, CallerIdDetector* cid, Ch1817Driver* ch1817, Ht9032Driver* ht9032, std::set<int> reserved) 
-    : registry(reg), config_mgr(cfg), gpio_mgr(gpio), context(ctx), adc_sampler(adc), caller_id_detector(cid), ch1817_driver(ch1817), ht9032_driver(ht9032), reserved_bcm_pins(std::move(reserved)) {
+WebServer::WebServer(std::map<int, std::shared_ptr<PinState>>& reg, ConfigManager& cfg, GpioManager& gpio, std::shared_ptr<SystemContext> ctx, AdcSampler* adc, CallerIdDetector* cid, Ch1817Driver* ch1817, std::set<int> reserved) 
+    : registry(reg), config_mgr(cfg), gpio_mgr(gpio), context(ctx), adc_sampler(adc), caller_id_detector(cid), ch1817_driver(ch1817), reserved_bcm_pins(std::move(reserved)) {
     setup_routes();
 }
 
@@ -762,7 +852,7 @@ void WebServer::setup_routes() {
         try {
             json body = json::parse(req.body.empty() ? "{}" : req.body);
             std::string src = body.value("fsk_source", "auto");
-            if (src != "auto" && src != "software_adc" && src != "ht9032_dout" && src != "ht9032_doutc") throw std::runtime_error("Illegal FSK source; use auto, software_adc, ht9032_dout, or ht9032_doutc.");
+            if (src != "auto" && src != "software_adc") throw std::runtime_error("Illegal FSK source; use auto or software_adc.");
             std::lock_guard<std::mutex> lock(context->config_mutex); json j; { std::ifstream f(context->config_path); if (f.is_open()) { try { f >> j; } catch (...) { j = json::object(); } } } if (!j.is_object()) j = json::object(); j["fsk_source"] = src; std::ofstream out(context->config_path); if (out.is_open()) out << j.dump(2);
             res.set_content(json{{"status","ok"},{"fsk_source",src}}.dump(), "application/json");
         } catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
@@ -778,12 +868,14 @@ void WebServer::setup_routes() {
         if (req.has_param("points")) {
             points = std::max<size_t>(100, std::min<size_t>(5000, std::strtoul(req.get_param_value("points").c_str(), nullptr, 10)));
         }
-        res.set_content(serialize_adc_scope(points), "application/json");
+        std::string view = req.has_param("view") ? req.get_param_value("view") : "raw";
+        std::string effects = req.has_param("effects") ? req.get_param_value("effects") : "";
+        res.set_content(serialize_adc_scope(points, view, effects), "application/json");
     });
 
     svr.Get("/api/caller-id", [this](const httplib::Request&, httplib::Response& res) {
         const std::string source = readFskSourceSetting(context);
-        json out = selectedCallerIdJson(source, caller_id_detector, ht9032_driver);
+        json out = selectedCallerIdJson(source, caller_id_detector);
         out["configured_source"] = source;
         res.set_content(out.dump(), "application/json");
     });
@@ -830,17 +922,6 @@ void WebServer::setup_routes() {
         if (!ch1817_driver) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"CH1817 driver disabled\"}", "application/json"); return; }
         try { json j = json::parse(req.body.empty() ? "{}" : req.body); ch1817_driver->setOffhook(j.value("offhook", false)); res.set_content(json{{"status","ok"},{"state",ch1817_driver->snapshotJson()}}.dump(), "application/json"); }
         catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()},{"help",ch1817_driver->validationHelp()}}.dump(), "application/json"); }
-    });
-
-    svr.Get("/api/ht9032", [this](const httplib::Request&, httplib::Response& res) {
-        if (!ht9032_driver) { res.status = 404; res.set_content("{\"enabled\":false,\"error\":\"HT9032 driver disabled\"}", "application/json"); return; }
-        res.set_content(ht9032_driver->snapshotJson().dump(), "application/json");
-    });
-
-    svr.Post("/api/ht9032/settings", [this](const httplib::Request& req, httplib::Response& res) {
-        if (!ht9032_driver) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"HT9032 driver disabled\"}", "application/json"); return; }
-        try { json j = json::parse(req.body.empty() ? "{}" : req.body); ht9032_driver->updateFromJson(j); res.set_content(json{{"status","ok"},{"settings",ht9032_driver->settingsJson()}}.dump(), "application/json"); }
-        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()},{"help",ht9032_driver->validationHelp()}}.dump(), "application/json"); }
     });
 
     svr.Get("/api/audio/modules", [this](const httplib::Request&, httplib::Response& res) {
@@ -941,20 +1022,23 @@ std::string WebServer::serialize_state() {
     return j.dump();
 }
 
-std::string WebServer::serialize_adc_scope(size_t max_points) {
+std::string WebServer::serialize_adc_scope(size_t max_points, const std::string& view, const std::string& effects_csv) {
     json j;
     if (!adc_sampler) {
         j = {
             {"enabled", false}, {"running", false}, {"healthy", false}, {"bitbang", false},
             {"sample_rate_hz", 0}, {"measured_sample_rate_hz", 0}, {"latest_raw", {0, 0}},
             {"latest_volts", {0.0, 0.0}}, {"total_frames", 0}, {"dropped_reads", 0},
-            {"last_error", "ADC sampler not configured"},
+            {"last_error", "ADC sampler not configured"}, {"graph_view", "raw"}, {"graph_effects", ""},
             {"samples", {{"ch0", json::array()}, {"ch1", json::array()}}}
         };
         return j.dump();
     }
 
+    const std::string safe_view = (view == "filtered" || view == "overlay") ? view : "raw";
     auto s = adc_sampler->snapshot(max_points);
+    const uint32_t sr = s.measured_sample_rate_hz ? s.measured_sample_rate_hz : s.sample_rate_hz;
+
     j["enabled"] = s.enabled;
     j["running"] = s.running;
     j["healthy"] = s.healthy;
@@ -966,10 +1050,26 @@ std::string WebServer::serialize_adc_scope(size_t max_points) {
     j["total_frames"] = s.total_frames;
     j["dropped_reads"] = s.dropped_reads;
     j["last_error"] = s.last_error;
-    j["samples"] = {
-        {"ch0", s.samples[0]},
-        {"ch1", s.samples[1]}
-    };
+    j["graph_view"] = safe_view;
+    j["graph_effects"] = effects_csv;
+    json skipped = json::array();
+    for (const auto& effect : splitEffectsCsv(effects_csv)) {
+        if (effect == "rnnoise") skipped.push_back("rnnoise");
+    }
+    j["graph_skipped_effects"] = skipped;
+
+    if (safe_view == "raw") {
+        j["samples"] = {{"ch0", s.samples[0]}, {"ch1", s.samples[1]}};
+    } else {
+        auto f0 = applyGraphEffectsToChannel(s.samples[0], sr, effects_csv);
+        auto f1 = applyGraphEffectsToChannel(s.samples[1], sr, effects_csv);
+        if (safe_view == "filtered") {
+            j["samples"] = {{"ch0", f0}, {"ch1", f1}};
+        } else {
+            j["samples"] = {{"ch0", s.samples[0]}, {"ch1", s.samples[1]}};
+            j["filtered_samples"] = {{"ch0", f0}, {"ch1", f1}};
+        }
+    }
     return j.dump();
 }
 
