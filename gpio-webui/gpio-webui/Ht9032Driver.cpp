@@ -12,6 +12,7 @@ using json = nlohmann::json;
 namespace {
 constexpr size_t MAX_BITS = 2400;
 constexpr size_t MAX_BYTES = 512;
+constexpr auto CARRIER_LOSS_HOLDOFF = std::chrono::milliseconds(75);
 int clampInt(int v, int lo, int hi) { return std::max(lo, std::min(hi, v)); }
 bool boolish(const json& j, const char* k, bool d) {
     if (!j.contains(k)) return d;
@@ -30,6 +31,13 @@ std::string ascii(const std::vector<uint8_t>& b, size_t p, size_t len) {
 }
 std::string fmtDate(const std::string& raw) { return raw.size() == 8 ? raw.substr(0,2)+"/"+raw.substr(2,2)+" "+raw.substr(4,2)+":"+raw.substr(6,2) : raw; }
 bool csum(const std::vector<uint8_t>& b, size_t start, size_t total) { uint32_t s=0; for(size_t i=0;i<total;i++) s += b[start+i]; return (s & 0xffu) == 0; }
+gpiod::line_request inputPullupRequest(const std::string& consumer) {
+    gpiod::line_request req;
+    req.consumer = consumer;
+    req.request_type = gpiod::line_request::DIRECTION_INPUT;
+    req.flags = gpiod::line_request::FLAG_BIAS_PULL_UP;
+    return req;
+}
 }
 
 Ht9032Driver::Ht9032Driver(std::shared_ptr<SystemContext> context) : context_(std::move(context)) { load(); }
@@ -122,7 +130,7 @@ void Ht9032Driver::updateFromJson(const json& j) {
 
 std::string Ht9032Driver::bytesHex(const std::vector<uint8_t>& bytes) { std::ostringstream oss; oss<<std::hex<<std::uppercase<<std::setfill('0'); for(size_t i=0;i<bytes.size();++i){ if(i)oss<<' '; oss<<std::setw(2)<<int(bytes[i]); } return oss.str(); }
 
-void Ht9032Driver::resetDecodeLocked(LineDecoder& d) { d.receiving=false; d.bit_index=0; d.byte=0; d.status="waiting"; }
+void Ht9032Driver::resetDecodeLocked(LineDecoder& d) { d.receiving=false; d.bit_index=0; d.byte=0; d.status="waiting"; d.confidence=0.0; }
 
 void Ht9032Driver::feedSerialLocked(LineDecoder& d, bool level, std::chrono::steady_clock::time_point now, int baud) {
     if (!d.enabled) return;
@@ -143,6 +151,7 @@ void Ht9032Driver::feedSerialLocked(LineDecoder& d, bool level, std::chrono::ste
                     d.bytes.push_back(d.byte);
                     if (d.bytes.size() > MAX_BYTES) d.bytes.erase(d.bytes.begin(), d.bytes.begin() + (d.bytes.size() - MAX_BYTES));
                     d.status = "bytes seen";
+                    d.confidence = std::min(0.80, 0.20 + static_cast<double>(d.bytes.size()) / 80.0);
                     parseCallerId(d);
                 } else d.status = "bad stop bit";
                 d.receiving = false; break;
@@ -162,6 +171,7 @@ void Ht9032Driver::parseCallerId(LineDecoder& d) {
         uint8_t type=b[i]; if(type!=0x04 && type!=0x80) continue;
         size_t len=b[i+1], total=len+3; if(len>100 || i+total>b.size()) continue;
         d.decoded = true; d.checksum_ok = csum(b,i,total); d.message_type = type==0x80 ? "MDMF (0x80)" : "SDMF (0x04)";
+        d.confidence = d.checksum_ok ? 1.0 : 0.70;
         if(type==0x04) { if(len>=8) d.date_time = fmtDate(ascii(b,i+2,8)); if(len>8) d.number = ascii(b,i+10,len-8); }
         else { size_t p=i+2, end=i+2+len; while(p+2<=end){ uint8_t pt=b[p++]; size_t pl=b[p++]; if(p+pl>end) break; std::string v=ascii(b,p,pl); if(pt==0x01)d.date_time=fmtDate(v); else if(pt==0x02||pt==0x04)d.number=v; else if(pt==0x07||pt==0x08)d.name=v; p+=pl; } }
         d.status = d.checksum_ok ? "decoded" : "decoded checksum mismatch"; return;
@@ -170,20 +180,20 @@ void Ht9032Driver::parseCallerId(LineDecoder& d) {
 
 json Ht9032Driver::snapshotJson() const {
     std::lock_guard<std::mutex> lock(mtx_);
-    auto dec = [](const LineDecoder& d){ return json{{"enabled",d.enabled},{"bits",d.bits},{"bytes_hex",Ht9032Driver::bytesHex(d.bytes)},{"byte_count",d.bytes.size()},{"status",d.status},{"decoded",d.decoded},{"checksum_ok",d.checksum_ok},{"message_type",d.message_type},{"date_time",d.date_time},{"number",d.number},{"name",d.name}}; };
+    auto dec = [](const LineDecoder& d){ return json{{"enabled",d.enabled},{"bits",d.bits},{"bytes_hex",Ht9032Driver::bytesHex(d.bytes)},{"byte_count",d.bytes.size()},{"status",d.status},{"confidence",d.confidence},{"decoded",d.decoded},{"checksum_ok",d.checksum_ok},{"message_type",d.message_type},{"date_time",d.date_time},{"number",d.number},{"name",d.name}}; };
     return {{"enabled",settings_.enabled},{"running",running_.load()},{"settings",settingsToJson(settings_)},{"pdwn_level",pdwn_level_},{"powered",settings_.powered},{"cdet_level",cdet_level_},{"carrier",carrier_},{"rdet_level",rdet_level_},{"ring_detect",ring_detect_},{"dout_level",dout_level_},{"doutc_level",doutc_level_},{"dout",dec(dout_)},{"doutc",dec(doutc_)},{"status",status_},{"last_error",last_error_},{"samples",samples_},{"help",gpioHelpText()}};
 }
 
 void Ht9032Driver::worker() {
-    Ht9032Settings cfg; { std::lock_guard<std::mutex> lock(mtx_); cfg=settings_; status_=cfg.enabled?"running":"disabled"; dout_.enabled=(cfg.monitor_mode=="both"||cfg.monitor_mode=="dout"); doutc_.enabled=(cfg.monitor_mode=="both"||cfg.monitor_mode=="doutc"); }
+    Ht9032Settings cfg; { std::lock_guard<std::mutex> lock(mtx_); cfg=settings_; status_=cfg.enabled?"running":"disabled"; dout_.enabled=(cfg.monitor_mode=="both"||cfg.monitor_mode=="dout"); doutc_.enabled=(cfg.monitor_mode=="both"||cfg.monitor_mode=="doutc"); last_carrier_seen_=std::chrono::steady_clock::now() - CARRIER_LOSS_HOLDOFF; }
     if (!cfg.enabled) return;
     gpiod::chip chip("0");
     std::unique_ptr<gpiod::line> pdwn, cdet, rdet, dout, doutc;
     bool rq_pdwn=false,rq_cdet=false,rq_rdet=false,rq_dout=false,rq_doutc=false;
     try {
         if(cfg.pdwn_control){ pdwn=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.pdwn_phys))); pdwn->request({"ht9032_pdwn",gpiod::line_request::DIRECTION_OUTPUT,0}, cfg.powered?0:1); rq_pdwn=true; }
-        cdet=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.cdet_phys))); cdet->request({"ht9032_cdet",gpiod::line_request::DIRECTION_INPUT,0}); rq_cdet=true;
-        if(cfg.rdet_phys>0){ rdet=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.rdet_phys))); rdet->request({"ht9032_rdet",gpiod::line_request::DIRECTION_INPUT,0}); rq_rdet=true; }
+        cdet=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.cdet_phys))); cdet->request(inputPullupRequest("ht9032_cdet")); rq_cdet=true;
+        if(cfg.rdet_phys>0){ rdet=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.rdet_phys))); rdet->request(inputPullupRequest("ht9032_rdet")); rq_rdet=true; }
         dout=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.dout_phys))); dout->request({"ht9032_dout",gpiod::line_request::DIRECTION_INPUT,0}); rq_dout=true;
         doutc=std::make_unique<gpiod::line>(chip.get_line(bcmForPhysicalPin(cfg.doutc_phys))); doutc->request({"ht9032_doutc",gpiod::line_request::DIRECTION_INPUT,0}); rq_doutc=true;
         while(running_) {
@@ -193,7 +203,19 @@ void Ht9032Driver::worker() {
             bool rl=true, ring=false; if(rdet){ rl=rdet->get_value(); ring=s.active_low_rdet ? !rl : rl; }
             bool dl=true,dcl=true; if(dout) dl=dout->get_value(); if(doutc) dcl=doutc->get_value();
             auto now=std::chrono::steady_clock::now();
-            { std::lock_guard<std::mutex> lock(mtx_); pdwn_level_=s.pdwn_control ? !s.powered : false; cdet_level_=cl; carrier_=car; rdet_level_=rl; ring_detect_=ring; dout_level_=dl; doutc_level_=dcl; dout_.enabled=(s.monitor_mode=="both"||s.monitor_mode=="dout"); doutc_.enabled=(s.monitor_mode=="both"||s.monitor_mode=="doutc"); samples_++; if(car){ feedSerialLocked(dout_,dl,now,s.baud); feedSerialLocked(doutc_,dcl,now,s.baud); status_="carrier present"; } else { resetDecodeLocked(dout_); resetDecodeLocked(doutc_); status_="waiting for carrier"; } }
+            {
+                std::lock_guard<std::mutex> lock(mtx_);
+                if (car) last_carrier_seen_ = now;
+                const bool carrier_recent = car || ((now - last_carrier_seen_) <= CARRIER_LOSS_HOLDOFF);
+                pdwn_level_=s.pdwn_control ? !s.powered : false; cdet_level_=cl; carrier_=car; rdet_level_=rl; ring_detect_=ring; dout_level_=dl; doutc_level_=dcl; dout_.enabled=(s.monitor_mode=="both"||s.monitor_mode=="dout"); doutc_.enabled=(s.monitor_mode=="both"||s.monitor_mode=="doutc"); samples_++;
+                if(carrier_recent){
+                    feedSerialLocked(dout_,dl,now,s.baud);
+                    feedSerialLocked(doutc_,dcl,now,s.baud);
+                    status_=car ? "carrier present" : "carrier holdoff";
+                } else {
+                    resetDecodeLocked(dout_); resetDecodeLocked(doutc_); status_="waiting for carrier";
+                }
+            }
             std::this_thread::sleep_for(std::chrono::microseconds(200));
         }
     } catch(const std::exception& e) { std::lock_guard<std::mutex> lock(mtx_); last_error_=e.what(); status_="error"; }

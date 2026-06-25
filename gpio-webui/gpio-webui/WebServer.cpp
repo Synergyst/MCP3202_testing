@@ -12,8 +12,103 @@
 #include <cstdint>
 #include <cmath>
 #include <fstream>
+#include <vector>
 
 using json = nlohmann::json;
+
+namespace {
+std::string readFskSourceSetting(const std::shared_ptr<SystemContext>& context) {
+    json j;
+    if (context) {
+        std::lock_guard<std::mutex> lock(context->config_mutex);
+        std::ifstream f(context->config_path);
+        if (f.is_open()) { try { f >> j; } catch (...) { j = json::object(); } }
+    }
+    if (!j.is_object()) j = json::object();
+    std::string src = j.value("fsk_source", "auto");
+    if (src != "auto" && src != "software_adc" && src != "ht9032_dout" && src != "ht9032_doutc") src = "auto";
+    return src;
+}
+
+double callerIdScore(const json& j) {
+    double score = j.value("confidence", 0.0);
+    if (j.value("detected", false)) score += 1.0;
+    if (j.value("checksum_ok", false)) score += 2.0;
+    return score;
+}
+
+json disabledCallerIdJson(const std::string& source, const std::string& reason) {
+    return {{"enabled", false}, {"running", false}, {"detected", false}, {"checksum_ok", false},
+            {"source", source}, {"source_label", source}, {"status", reason}, {"last_error", reason},
+            {"confidence", 0.0}, {"number", ""}, {"name", ""}, {"date_time", ""},
+            {"message_type", ""}, {"raw_bits", ""}, {"raw_bytes_hex", ""}};
+}
+
+json htLineToCallerIdJson(const json& ht, const std::string& key, const std::string& source) {
+    if (!ht.value("enabled", false)) return disabledCallerIdJson(source, "HT9032 disabled");
+    const json line = ht.contains(key) && ht[key].is_object() ? ht[key] : json::object();
+    const bool decoded = line.value("decoded", false);
+    const bool checksum = line.value("checksum_ok", false);
+    const double confidence = line.value("confidence", decoded ? (checksum ? 1.0 : 0.70) : 0.0);
+    std::string label = source == "ht9032_doutc" ? "HT9032 DOUTC" : "HT9032 DOUT";
+    return {
+        {"enabled", ht.value("enabled", false)},
+        {"running", ht.value("running", false)},
+        {"detected", decoded},
+        {"checksum_ok", checksum},
+        {"source", source},
+        {"source_label", label},
+        {"total_decodes", decoded ? 1 : 0},
+        {"last_total_frames_seen", ht.value("samples", 0ull)},
+        {"sample_rate_hz", ht.value("settings", json::object()).value("baud", 1200)},
+        {"selected_channel", source == "ht9032_doutc" ? 4 : 3},
+        {"confidence", confidence},
+        {"best_confidence", confidence},
+        {"best_selected_channel", source == "ht9032_doutc" ? 4 : 3},
+        {"status", line.value("status", ht.value("status", "waiting"))},
+        {"message_type", line.value("message_type", "")},
+        {"date_time", line.value("date_time", "")},
+        {"date_time_raw", ""},
+        {"number", line.value("number", "")},
+        {"name", line.value("name", "")},
+        {"raw_bits", line.value("bits", "")},
+        {"raw_bytes_hex", line.value("bytes_hex", "")},
+        {"best_raw_bits", line.value("bits", "")},
+        {"best_raw_bytes_hex", line.value("bytes_hex", "")},
+        {"best_status", line.value("status", "")},
+        {"best_update", ""},
+        {"last_update", ""},
+        {"last_error", ht.value("last_error", "")},
+        {"settings", ht.value("settings", json::object())}
+    };
+}
+
+json selectedCallerIdJson(const std::string& source, CallerIdDetector* cid, Ht9032Driver* ht) {
+    auto software = [&]() -> json {
+        if (!cid) return disabledCallerIdJson("software_adc", "Software ADC Caller ID detector disabled");
+        json out = cid->snapshotJson();
+        out["source"] = "software_adc";
+        out["source_label"] = "Software ADC";
+        return out;
+    };
+    auto htline = [&](const std::string& key, const std::string& src) -> json {
+        if (!ht) return disabledCallerIdJson(src, "HT9032 driver disabled");
+        return htLineToCallerIdJson(ht->snapshotJson(), key, src);
+    };
+
+    if (source == "software_adc") return software();
+    if (source == "ht9032_dout") return htline("dout", "ht9032_dout");
+    if (source == "ht9032_doutc") return htline("doutc", "ht9032_doutc");
+
+    std::vector<json> candidates;
+    candidates.push_back(software());
+    candidates.push_back(htline("dout", "ht9032_dout"));
+    candidates.push_back(htline("doutc", "ht9032_doutc"));
+    return *std::max_element(candidates.begin(), candidates.end(), [](const json& a, const json& b) {
+        return callerIdScore(a) < callerIdScore(b);
+    });
+}
+}
 
 const char* HTML_UI = R"html(
 <!DOCTYPE html>
@@ -296,7 +391,7 @@ const char* HTML_UI = R"html(
         }
 
         function channelLabel(ch) {
-            return ch === 0 ? 'CH0' : (ch === 1 ? 'CH1' : (ch === 2 ? 'CH0+CH1 mix' : (ch === -1 ? 'Auto' : '-')));
+            return ch === 0 ? 'CH0' : (ch === 1 ? 'CH1' : (ch === 2 ? 'CH0+CH1 mix' : (ch === 3 ? 'HT9032 DOUT' : (ch === 4 ? 'HT9032 DOUTC' : (ch === -1 ? 'Auto' : '-')))));
         }
 
         let cidTuneDirty = false;
@@ -659,9 +754,8 @@ void WebServer::setup_routes() {
 
     svr.Get("/api/system/settings", [this](const httplib::Request&, httplib::Response& res) {
         json j;
-        { std::lock_guard<std::mutex> lock(context->config_mutex); std::ifstream f(context->config_path); if (f.is_open()) { try { f >> j; } catch (...) { j = json::object(); } } }
-        if (!j.is_object()) j = json::object();
-        res.set_content(json{{"fsk_source", j.value("fsk_source", "auto")}}.dump(), "application/json");
+        std::string src = readFskSourceSetting(context);
+        res.set_content(json{{"fsk_source", src}}.dump(), "application/json");
     });
 
     svr.Post("/api/system/settings", [this](const httplib::Request& req, httplib::Response& res) {
@@ -688,12 +782,10 @@ void WebServer::setup_routes() {
     });
 
     svr.Get("/api/caller-id", [this](const httplib::Request&, httplib::Response& res) {
-        if (!caller_id_detector) {
-            res.status = 404;
-            res.set_content("{\"enabled\":false,\"error\":\"Caller ID detector disabled\"}", "application/json");
-            return;
-        }
-        res.set_content(caller_id_detector->snapshotJson().dump(), "application/json");
+        const std::string source = readFskSourceSetting(context);
+        json out = selectedCallerIdJson(source, caller_id_detector, ht9032_driver);
+        out["configured_source"] = source;
+        res.set_content(out.dump(), "application/json");
     });
 
     svr.Get("/api/caller-id/settings", [this](const httplib::Request&, httplib::Response& res) {

@@ -119,6 +119,9 @@ void Ch1817Driver::updateFromJson(const json& j) {
 
 void Ch1817Driver::setOffhook(bool offhook) {
     std::lock_guard<std::mutex> lock(mtx_);
+    if (offhook && ringing_ && !ri_level_) {
+        throw std::runtime_error("CH1817 refuses to go off-hook while RI is active/LOW. The CH1817 datasheet warns that setting OFFHK HIGH before RI returns HIGH during ring indication may degrade internal relay contacts; wait for RI HIGH or the between-ring silent interval.");
+    }
     settings_.offhook = offhook;
     status_ = offhook ? "off-hook requested" : "on-hook requested";
     saveLocked();
@@ -199,9 +202,13 @@ void Ch1817Driver::worker() {
                     if (settings_.auto_answer_enabled && !settings_.offhook) {
                         const auto ring_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - ring_start_).count();
                         if (ring_ms >= settings_.auto_answer_delay_ms) {
-                            settings_.offhook = true;
-                            status_ = "auto-answered";
-                            do_save = true;
+                            if (ri_level_) {
+                                settings_.offhook = true;
+                                status_ = "auto-answered";
+                                do_save = true;
+                            } else {
+                                status_ = "auto-answer armed; waiting for RI HIGH";
+                            }
                         }
                     }
                 }

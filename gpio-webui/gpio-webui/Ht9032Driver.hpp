@@ -59,6 +59,7 @@ private:
         std::string bits;
         std::vector<uint8_t> bytes;
         std::string status;
+        double confidence = 0.0;
         bool decoded = false;
         bool checksum_ok = false;
         std::string message_type;
@@ -85,6 +86,7 @@ private:
     bool ring_detect_ = false;
     bool dout_level_ = true;
     bool doutc_level_ = true;
+    std::chrono::steady_clock::time_point last_carrier_seen_{};
     LineDecoder dout_;
     LineDecoder doutc_;
     std::string status_ = "stopped";
