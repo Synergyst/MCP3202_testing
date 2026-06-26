@@ -17,9 +17,11 @@ struct AdcScopeData {
     bool running = false;
     bool healthy = false;
     bool bitbang = false;
-    uint32_t sample_rate_hz = 8000; // requested/nominal complete two-channel frames per second
-    uint32_t measured_sample_rate_hz = 8000; // recent/windowed effective ring-buffer frame rate
-    uint32_t lifetime_sample_rate_hz = 8000; // lifetime average since first successful sample
+    // "mcp3202-spidev" or "rp2040"
+    std::string adc_source;
+    uint32_t sample_rate_hz = 8000;
+    uint32_t measured_sample_rate_hz = 8000;
+    uint32_t lifetime_sample_rate_hz = 8000;
     std::array<uint16_t, 2> latest_raw{{0, 0}};
     std::array<double, 2> latest_volts{{0.0, 0.0}};
     uint64_t total_frames = 0;
@@ -34,11 +36,22 @@ struct AdcScopeData {
     uint64_t max_mutex_hold_us = 0;
     uint64_t snapshot_count = 0;
     uint64_t snapshot_samples_copied = 0;
+    // SPI/MCP3202 mode fields
     bool realtime_requested = false;
     bool realtime_active = false;
     int realtime_priority = 0;
     int cpu_affinity = -1;
     std::string scheduler_status;
+    // RP2040 stream diagnostics
+    bool rp2040_connected = false;
+    uint64_t rp2040_packets_ok = 0;
+    uint64_t rp2040_packets_crc_bad = 0;
+    uint64_t rp2040_sequence_gaps = 0;
+    uint32_t rp2040_firmware_lost_frames = 0;
+    uint32_t rp2040_firmware_flags = 0;
+    std::string rp2040_dev;
+    uint32_t rp2040_declared_rate_hz = 0;
+
     size_t valid_samples = 0;
     size_t history_capacity_samples = 0;
     std::string last_error;
@@ -49,13 +62,18 @@ class AdcSampler {
 public:
     struct Config {
         bool enabled = true;
-        uint32_t sample_rate_hz = 8000; // complete two-channel frames per second
-        size_t history_samples = 8000 * 4; // four seconds of per-channel history
+        // "mcp3202-spidev" (default) or "rp2040"
+        std::string adc_source = "mcp3202-spidev";
+        uint32_t sample_rate_hz = 8000;
+        size_t history_samples = 8000 * 30;
         double vref = 3.3;
-        bool realtime = false;       // optional SCHED_FIFO for ADC worker
-        int realtime_priority = 10;  // modest RT priority when realtime=true
-        int cpu_affinity = -1;       // -1 = do not pin, otherwise Linux CPU index
+        // MCP3202 spidev options
+        bool realtime = false;
+        int realtime_priority = 10;
+        int cpu_affinity = -1;
         MCP3202::Config adc;
+        // RP2040 USB CDC options
+        std::string rp2040_dev = "/dev/ttyACM0";
     };
 
     AdcSampler();
@@ -74,9 +92,16 @@ public:
     AdcScopeData recent(size_t frames) const;
 
 private:
-    void worker();
+    // MCP3202/spidev sampling loop
+    void workerSpidev();
+    // RP2040 USB CDC reader loop
+    void workerRp2040();
+
     void configureWorkerScheduling();
     void fillStatusLocked(AdcScopeData& data) const;
+    void pushFrameLocked(uint16_t ch0, uint16_t ch1,
+                         const std::chrono::steady_clock::time_point& sample_time,
+                         uint64_t read_us, uint64_t wait_us);
     std::vector<uint16_t> copyRecentDecimatedLocked(int channel, size_t max_points) const;
     std::vector<uint16_t> copyRecentExactLocked(int channel, size_t frames) const;
     static uint64_t ema(uint64_t old_value, uint64_t sample, uint32_t weight = 31);
@@ -109,6 +134,17 @@ private:
     std::string scheduler_status_;
     bool healthy_ = false;
     std::string last_error_;
+
+    // RP2040 diagnostics (protected by mtx_)
+    bool rp2040_connected_ = false;
+    uint64_t rp2040_packets_ok_ = 0;
+    uint64_t rp2040_packets_crc_bad_ = 0;
+    uint64_t rp2040_sequence_gaps_ = 0;
+    uint32_t rp2040_firmware_lost_frames_ = 0;
+    uint32_t rp2040_firmware_flags_ = 0;
+    uint32_t rp2040_declared_rate_hz_ = 0;
+    bool rp2040_have_last_seq_ = false;
+    uint32_t rp2040_last_seq_ = 0;
 
     std::atomic<bool> running_{false};
     std::thread worker_;

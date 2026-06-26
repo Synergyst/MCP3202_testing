@@ -1,16 +1,24 @@
 #include "AdcSampler.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <iostream>
 #include <pthread.h>
 #include <sched.h>
 #include <sstream>
+#include <termios.h>
 #include <time.h>
+#include <unistd.h>
 #include <utility>
+#include <vector>
+
+// ─── helpers for absolute-time sleeping ────────────────────────────────────
 
 namespace {
+
 int64_t monotonicNs() {
     timespec ts{};
     ::clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -19,12 +27,9 @@ int64_t monotonicNs() {
 
 timespec nsToTimespec(int64_t ns) {
     timespec ts{};
-    ts.tv_sec = static_cast<time_t>(ns / 1000000000ll);
+    ts.tv_sec  = static_cast<time_t>(ns / 1000000000ll);
     ts.tv_nsec = static_cast<long>(ns % 1000000000ll);
-    if (ts.tv_nsec < 0) {
-        ts.tv_sec--;
-        ts.tv_nsec += 1000000000l;
-    }
+    if (ts.tv_nsec < 0) { ts.tv_sec--; ts.tv_nsec += 1000000000l; }
     return ts;
 }
 
@@ -36,24 +41,90 @@ void cpuRelax() {
 #endif
 }
 
-void sleepUntilMonotonicNs(int64_t target_ns, int64_t spin_ns, const std::atomic<bool>& running) {
+void sleepUntilMonotonicNs(int64_t target_ns, int64_t spin_ns,
+                            const std::atomic<bool>& running) {
     const int64_t sleep_target = target_ns - std::max<int64_t>(0, spin_ns);
     while (running.load(std::memory_order_relaxed)) {
         int64_t now = monotonicNs();
         if (now >= sleep_target) break;
         timespec ts = nsToTimespec(sleep_target);
         int rc;
-        do {
-            rc = ::clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr);
-        } while (rc == EINTR && running.load(std::memory_order_relaxed));
+        do { rc = ::clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr); }
+        while (rc == EINTR && running.load(std::memory_order_relaxed));
         if (rc != 0 && rc != EINTR) break;
     }
-
-    while (running.load(std::memory_order_relaxed) && monotonicNs() < target_ns) {
+    while (running.load(std::memory_order_relaxed) && monotonicNs() < target_ns)
         cpuRelax();
+}
+
+// ─── RP2040 binary protocol helpers ────────────────────────────────────────
+
+// Packet magic: 'ADC2' little-endian = 0x32434441
+constexpr uint32_t RP2040_MAGIC   = 0x32434441u;
+constexpr uint16_t RP2040_VERSION = 1u;
+
+struct __attribute__((packed)) Rp2040Header {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t header_bytes;
+    uint32_t sample_rate_hz;
+    uint32_t frame_count;
+    uint32_t sequence_start;
+    uint32_t flags;
+    uint32_t lost_frames;
+    uint32_t reserved;
+};
+
+struct __attribute__((packed)) Rp2040Frame {
+    uint32_t seq;
+    uint16_t ch0;
+    uint16_t ch1;
+};
+
+static_assert(sizeof(Rp2040Header) == 32, "header size");
+static_assert(sizeof(Rp2040Frame)  ==  8, "frame size");
+
+uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len) {
+    crc = ~crc;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; ++b)
+            crc = (crc >> 1) ^ (0xEDB88320u & (-(int32_t)(crc & 1u)));
     }
+    return ~crc;
 }
+
+bool readExact(int fd, uint8_t* out, size_t len, const std::atomic<bool>& running) {
+    size_t got = 0;
+    while (got < len && running.load(std::memory_order_relaxed)) {
+        ssize_t rc = ::read(fd, out + got, len - got);
+        if (rc > 0)  { got += static_cast<size_t>(rc); continue; }
+        if (rc == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue; }
+        if (errno == EINTR)              continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue;
+        }
+        return false;
+    }
+    return got == len;
 }
+
+bool configureTtyRaw(int fd) {
+    termios tio{};
+    if (::tcgetattr(fd, &tio) != 0) return false;
+    ::cfmakeraw(&tio);
+    ::cfsetispeed(&tio, B115200);
+    ::cfsetospeed(&tio, B115200);
+    tio.c_cflag |= (CLOCAL | CREAD);
+    tio.c_cflag &= ~CRTSCTS;
+    tio.c_cc[VMIN]  = 0;
+    tio.c_cc[VTIME] = 1;
+    return ::tcsetattr(fd, TCSANOW, &tio) == 0;
+}
+
+} // namespace
+
+// ─── AdcSampler implementation ─────────────────────────────────────────────
 
 AdcSampler::AdcSampler() : AdcSampler(Config()) {}
 
@@ -64,14 +135,15 @@ AdcSampler::AdcSampler(Config config)
     ring_[1].assign(n, 0);
 }
 
-AdcSampler::~AdcSampler() {
-    stop();
-}
+AdcSampler::~AdcSampler() { stop(); }
 
 void AdcSampler::start() {
     if (!config_.enabled || running_) return;
     running_ = true;
-    worker_ = std::thread(&AdcSampler::worker, this);
+    if (config_.adc_source == "rp2040")
+        worker_ = std::thread(&AdcSampler::workerRp2040, this);
+    else
+        worker_ = std::thread(&AdcSampler::workerSpidev, this);
 }
 
 void AdcSampler::stop() {
@@ -80,14 +152,69 @@ void AdcSampler::stop() {
     if (adc_) adc_->close();
 }
 
-bool AdcSampler::isEnabled() const {
-    return config_.enabled;
-}
+bool AdcSampler::isEnabled() const { return config_.enabled; }
 
 uint64_t AdcSampler::ema(uint64_t old_value, uint64_t sample, uint32_t weight) {
     if (old_value == 0) return sample;
     return (old_value * weight + sample) / (weight + 1);
 }
+
+// ─── shared ring-push helper ────────────────────────────────────────────────
+
+void AdcSampler::pushFrameLocked(uint16_t ch0, uint16_t ch1,
+                                  const std::chrono::steady_clock::time_point& sample_time,
+                                  uint64_t read_us, uint64_t wait_us) {
+    if (total_frames_ == 0) {
+        first_sample_time_ = sample_time;
+        last_sample_time_  = sample_time;
+        rate_window_start_ = sample_time;
+        rate_window_frames_ = 0;
+        measured_sample_rate_hz_ = config_.sample_rate_hz;
+        lifetime_sample_rate_hz_ = config_.sample_rate_hz;
+    } else {
+        last_sample_time_ = sample_time;
+    }
+
+    ring_[0][write_index_] = ch0;
+    ring_[1][write_index_] = ch1;
+    write_index_ = (write_index_ + 1) % ring_[0].size();
+    valid_samples_ = std::min(valid_samples_ + 1, ring_[0].size());
+    latest_raw_[0] = ch0;
+    latest_raw_[1] = ch1;
+    total_frames_++;
+
+    avg_frame_read_us_ = ema(avg_frame_read_us_, read_us);
+    max_frame_read_us_ = std::max(max_frame_read_us_, read_us);
+    avg_mutex_wait_us_ = ema(avg_mutex_wait_us_, wait_us);
+    max_mutex_wait_us_ = std::max(max_mutex_wait_us_, wait_us);
+
+    if (total_frames_ > 1) {
+        const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     last_sample_time_ - first_sample_time_).count();
+        if (elapsed_ns > 0) {
+            const uint64_t measured =
+                ((total_frames_ - 1) * 1000000000ull + static_cast<uint64_t>(elapsed_ns / 2))
+                / static_cast<uint64_t>(elapsed_ns);
+            lifetime_sample_rate_hz_ = static_cast<uint32_t>(std::max<uint64_t>(1, measured));
+        }
+    }
+
+    const auto win_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            sample_time - rate_window_start_).count();
+    if (win_ns >= 1000000000ll) {
+        const uint64_t frames  = total_frames_ - rate_window_frames_;
+        const uint64_t recent  = (frames * 1000000000ull + static_cast<uint64_t>(win_ns / 2))
+                                 / static_cast<uint64_t>(win_ns);
+        measured_sample_rate_hz_ = static_cast<uint32_t>(std::max<uint64_t>(1, recent));
+        rate_window_start_ = sample_time;
+        rate_window_frames_ = total_frames_;
+    }
+
+    healthy_ = true;
+    last_error_.clear();
+}
+
+// ─── MCP3202 spidev worker ──────────────────────────────────────────────────
 
 void AdcSampler::configureWorkerScheduling() {
     std::ostringstream status;
@@ -98,26 +225,16 @@ void AdcSampler::configureWorkerScheduling() {
         CPU_ZERO(&cpuset);
         CPU_SET(config_.cpu_affinity, &cpuset);
         int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
-        if (rc == 0) {
-            status << "affinity=cpu" << config_.cpu_affinity << " ";
-        } else {
-            ok = false;
-            status << "affinity failed: " << std::strerror(rc) << " ";
-        }
+        if (rc == 0) status << "affinity=cpu" << config_.cpu_affinity << " ";
+        else { ok = false; status << "affinity failed: " << std::strerror(rc) << " "; }
     }
 
     if (config_.realtime) {
         sched_param sp{};
         sp.sched_priority = std::max(1, std::min(99, config_.realtime_priority));
         int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
-        if (rc == 0) {
-            realtime_active_ = true;
-            status << "SCHED_FIFO priority " << sp.sched_priority;
-        } else {
-            ok = false;
-            realtime_active_ = false;
-            status << "SCHED_FIFO failed: " << std::strerror(rc);
-        }
+        if (rc == 0) { realtime_active_ = true;  status << "SCHED_FIFO priority " << sp.sched_priority; }
+        else         { ok = false; realtime_active_ = false; status << "SCHED_FIFO failed: " << std::strerror(rc); }
     } else if (status.str().empty()) {
         status << "normal scheduler";
     }
@@ -127,14 +244,11 @@ void AdcSampler::configureWorkerScheduling() {
     if (!ok && !last_error_.empty()) scheduler_status_ += "; last_error=" + last_error_;
 }
 
-void AdcSampler::worker() {
+void AdcSampler::workerSpidev() {
     configureWorkerScheduling();
 
-    const int64_t period_ns = static_cast<int64_t>(1000000000ull / std::max<uint32_t>(1, config_.sample_rate_hz));
-    // Sleep most of the interval with absolute CLOCK_MONOTONIC deadlines, then
-    // spin briefly to avoid sub-millisecond scheduler oversleep stretching the
-    // effective period. 80 us is conservative for a 277.8 us period at 3600 Hz
-    // and still leaves most CPU time available between samples.
+    const int64_t period_ns = static_cast<int64_t>(
+        1000000000ull / std::max<uint32_t>(1, config_.sample_rate_hz));
     const int64_t spin_ns = std::min<int64_t>(80000, std::max<int64_t>(0, period_ns / 3));
     int64_t next_sample_ns = monotonicNs();
 
@@ -150,73 +264,36 @@ void AdcSampler::worker() {
             const auto read_start = std::chrono::steady_clock::now();
             std::array<uint16_t, 2> raw = adc_->readBothChannels();
             const auto sample_time = std::chrono::steady_clock::now();
-            const uint64_t read_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(sample_time - read_start).count());
+            const uint64_t read_us = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    sample_time - read_start).count());
 
-            const int64_t after_read_ns = monotonicNs();
-            const int64_t late_ns = after_read_ns - next_sample_ns;
+            const int64_t after_read_ns  = monotonicNs();
+            const int64_t late_ns        = after_read_ns - next_sample_ns;
             if (late_ns > period_ns) {
                 std::lock_guard<std::mutex> lock(mtx_);
                 overruns_++;
-                max_overrun_us_ = std::max<uint64_t>(max_overrun_us_, static_cast<uint64_t>(late_ns / 1000));
+                max_overrun_us_ = std::max<uint64_t>(max_overrun_us_,
+                                                     static_cast<uint64_t>(late_ns / 1000));
             }
 
             const auto lock_wait_start = std::chrono::steady_clock::now();
             mtx_.lock();
             const auto lock_acquired = std::chrono::steady_clock::now();
-            const uint64_t wait_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(lock_acquired - lock_wait_start).count());
-            {
-                if (total_frames_ == 0) {
-                    first_sample_time_ = sample_time;
-                    last_sample_time_ = sample_time;
-                    rate_window_start_ = sample_time;
-                    rate_window_frames_ = 0;
-                    measured_sample_rate_hz_ = config_.sample_rate_hz;
-                    lifetime_sample_rate_hz_ = config_.sample_rate_hz;
-                } else {
-                    last_sample_time_ = sample_time;
-                }
+            const uint64_t wait_us = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    lock_acquired - lock_wait_start).count());
 
-                ring_[0][write_index_] = raw[0];
-                ring_[1][write_index_] = raw[1];
-                write_index_ = (write_index_ + 1) % ring_[0].size();
-                valid_samples_ = std::min(valid_samples_ + 1, ring_[0].size());
-                latest_raw_ = raw;
-                total_frames_++;
+            pushFrameLocked(raw[0], raw[1], sample_time, read_us, wait_us);
 
-                avg_frame_read_us_ = ema(avg_frame_read_us_, read_us);
-                max_frame_read_us_ = std::max(max_frame_read_us_, read_us);
-                avg_mutex_wait_us_ = ema(avg_mutex_wait_us_, wait_us);
-                max_mutex_wait_us_ = std::max(max_mutex_wait_us_, wait_us);
-
-                if (total_frames_ > 1) {
-                    const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(last_sample_time_ - first_sample_time_).count();
-                    if (elapsed_ns > 0) {
-                        const uint64_t measured = ((total_frames_ - 1) * 1000000000ull + static_cast<uint64_t>(elapsed_ns / 2)) / static_cast<uint64_t>(elapsed_ns);
-                        lifetime_sample_rate_hz_ = static_cast<uint32_t>(std::max<uint64_t>(1, measured));
-                    }
-                }
-
-                const auto win_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(sample_time - rate_window_start_).count();
-                if (win_ns >= 1000000000ll) {
-                    const uint64_t frames = total_frames_ - rate_window_frames_;
-                    const uint64_t recent = (frames * 1000000000ull + static_cast<uint64_t>(win_ns / 2)) / static_cast<uint64_t>(win_ns);
-                    measured_sample_rate_hz_ = static_cast<uint32_t>(std::max<uint64_t>(1, recent));
-                    rate_window_start_ = sample_time;
-                    rate_window_frames_ = total_frames_;
-                }
-
-                healthy_ = true;
-                last_error_.clear();
-            }
             const auto unlock_time = std::chrono::steady_clock::now();
-            const uint64_t hold_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(unlock_time - lock_acquired).count());
+            const uint64_t hold_us = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    unlock_time - lock_acquired).count());
             avg_mutex_hold_us_ = ema(avg_mutex_hold_us_, hold_us);
             max_mutex_hold_us_ = std::max(max_mutex_hold_us_, hold_us);
             mtx_.unlock();
 
-            // If a rare stall missed multiple periods, skip exactly the missed
-            // deadlines and resume on the absolute schedule instead of stretching
-            // every future interval. Small lateness keeps phase locked.
             const int64_t done_ns = monotonicNs();
             if (done_ns - next_sample_ns > period_ns * 4) {
                 const int64_t missed = (done_ns - next_sample_ns) / period_ns;
@@ -226,7 +303,7 @@ void AdcSampler::worker() {
             {
                 std::lock_guard<std::mutex> lock(mtx_);
                 dropped_reads_++;
-                healthy_ = false;
+                healthy_    = false;
                 last_error_ = e.what();
             }
             if (adc_) adc_->close();
@@ -236,8 +313,152 @@ void AdcSampler::worker() {
     }
 }
 
-std::vector<uint16_t> AdcSampler::copyRecentDecimatedLocked(int channel, size_t max_points) const {
-    const auto& ring = ring_[channel];
+// ─── RP2040 USB CDC worker ──────────────────────────────────────────────────
+
+void AdcSampler::workerRp2040() {
+    const std::string device = config_.rp2040_dev;
+
+    auto set_error = [&](const std::string& msg) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        healthy_             = false;
+        rp2040_connected_    = false;
+        last_error_          = msg;
+    };
+
+    while (running_) {
+        // Open the serial port
+        int fd = ::open(device.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC);
+        if (fd < 0) {
+            set_error(std::string("open ") + device + ": " + std::strerror(errno));
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            continue;
+        }
+        configureTtyRaw(fd);
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            rp2040_connected_ = true;
+            healthy_          = false; // will become true once we receive valid data
+            last_error_.clear();
+        }
+
+        // Sliding 4-byte window for magic sync
+        std::array<uint8_t, 4> window{};
+        size_t window_fill = 0;
+
+        while (running_) {
+            // Sync to magic 'ADC2'
+            while (running_) {
+                uint8_t byte = 0;
+                ssize_t rc = ::read(fd, &byte, 1);
+                if (rc == 1) {
+                    if (window_fill < window.size()) {
+                        window[window_fill++] = byte;
+                    } else {
+                        window[0] = window[1];
+                        window[1] = window[2];
+                        window[2] = window[3];
+                        window[3] = byte;
+                    }
+                    if (window_fill < window.size()) continue;
+                    uint32_t magic = static_cast<uint32_t>(window[0])
+                                   | (static_cast<uint32_t>(window[1]) << 8)
+                                   | (static_cast<uint32_t>(window[2]) << 16)
+                                   | (static_cast<uint32_t>(window[3]) << 24);
+                    if (magic == RP2040_MAGIC) break; // found start of header
+                    continue;
+                }
+                if (rc == 0 || errno == EAGAIN || errno == EWOULDBLOCK) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    continue;
+                }
+                if (errno == EINTR) continue;
+                // fatal read error
+                goto reconnect;
+            }
+            if (!running_) break;
+
+            // Read remainder of header
+            Rp2040Header hdr{};
+            std::memcpy(&hdr, window.data(), 4);
+            if (!readExact(fd, reinterpret_cast<uint8_t*>(&hdr) + 4,
+                           sizeof(hdr) - 4, running_))
+                goto reconnect;
+
+            if (hdr.magic != RP2040_MAGIC
+             || hdr.version != RP2040_VERSION
+             || hdr.header_bytes != sizeof(Rp2040Header)
+             || hdr.frame_count == 0
+             || hdr.frame_count > 4096) {
+                // Bad header — re-sync
+                window_fill = 0;
+                continue;
+            }
+
+            // Read frames
+            std::vector<Rp2040Frame> frames(hdr.frame_count);
+            if (!readExact(fd, reinterpret_cast<uint8_t*>(frames.data()),
+                           frames.size() * sizeof(Rp2040Frame), running_))
+                goto reconnect;
+
+            // Read CRC
+            uint32_t pkt_crc = 0;
+            if (!readExact(fd, reinterpret_cast<uint8_t*>(&pkt_crc),
+                           sizeof(pkt_crc), running_))
+                goto reconnect;
+
+            // Verify CRC
+            uint32_t calc = 0;
+            calc = crc32Update(calc, reinterpret_cast<const uint8_t*>(&hdr), sizeof(hdr));
+            calc = crc32Update(calc, reinterpret_cast<const uint8_t*>(frames.data()),
+                               frames.size() * sizeof(Rp2040Frame));
+
+            {
+                std::lock_guard<std::mutex> lock(mtx_);
+                if (calc != pkt_crc) {
+                    rp2040_packets_crc_bad_++;
+                    // re-sync after bad CRC
+                    window_fill = 0;
+                    continue;
+                }
+
+                // Good packet
+                rp2040_packets_ok_++;
+                rp2040_declared_rate_hz_     = hdr.sample_rate_hz;
+                rp2040_firmware_flags_       = hdr.flags;
+                rp2040_firmware_lost_frames_ = hdr.lost_frames;
+
+                if (rp2040_have_last_seq_ && hdr.sequence_start != rp2040_last_seq_ + 1u)
+                    rp2040_sequence_gaps_++;
+                rp2040_have_last_seq_ = true;
+                rp2040_last_seq_      = frames.back().seq;
+
+                // Determine vref for voltage calc: use firmware rate for ring
+                // but honour the config sample_rate_hz as the declared nominal
+                const auto now = std::chrono::steady_clock::now();
+                for (const auto& f : frames) {
+                    pushFrameLocked(f.ch0, f.ch1, now, 0, 0);
+                }
+            }
+            // Re-prep for next packet (window already consumed)
+            window_fill = 0;
+        } // inner while
+
+        reconnect:
+        ::close(fd);
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            rp2040_connected_ = false;
+        }
+        if (running_)
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+}
+
+// ─── ring helpers ───────────────────────────────────────────────────────────
+
+std::vector<uint16_t> AdcSampler::copyRecentDecimatedLocked(int channel,
+                                                              size_t max_points) const {
+    const auto& ring  = ring_[channel];
     const size_t count = std::min(valid_samples_, ring.size());
     if (count == 0 || max_points == 0) return {};
 
@@ -250,7 +471,6 @@ std::vector<uint16_t> AdcSampler::copyRecentDecimatedLocked(int channel, size_t 
         return ordered;
     }
 
-    // Direct min/max decimation from the ring: no full-history temporary vector.
     std::vector<uint16_t> decimated;
     decimated.reserve(max_points);
     const size_t buckets = std::max<size_t>(1, max_points / 2);
@@ -274,53 +494,66 @@ std::vector<uint16_t> AdcSampler::copyRecentDecimatedLocked(int channel, size_t 
 }
 
 std::vector<uint16_t> AdcSampler::copyRecentExactLocked(int channel, size_t frames) const {
-    const auto& ring = ring_[channel];
+    const auto& ring  = ring_[channel];
     const size_t count = std::min({frames, valid_samples_, ring.size()});
     if (count == 0) return {};
 
     std::vector<uint16_t> ordered;
     ordered.reserve(count);
     const size_t start = (write_index_ + ring.size() - count) % ring.size();
-    for (size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i)
         ordered.push_back(ring[(start + i) % ring.size()]);
-    }
     snapshot_samples_copied_ += ordered.size();
     return ordered;
 }
 
+// ─── status / snapshot ──────────────────────────────────────────────────────
+
 void AdcSampler::fillStatusLocked(AdcScopeData& data) const {
-    data.enabled = config_.enabled;
-    data.running = running_;
-    data.healthy = healthy_;
-    data.bitbang = config_.adc.bitbang;
-    data.sample_rate_hz = config_.sample_rate_hz;
-    data.measured_sample_rate_hz = measured_sample_rate_hz_ ? measured_sample_rate_hz_ : config_.sample_rate_hz;
-    data.lifetime_sample_rate_hz = lifetime_sample_rate_hz_ ? lifetime_sample_rate_hz_ : data.measured_sample_rate_hz;
-    data.latest_raw = latest_raw_;
+    data.enabled          = config_.enabled;
+    data.running          = running_;
+    data.healthy          = healthy_;
+    data.bitbang          = config_.adc.bitbang;
+    data.adc_source       = config_.adc_source;
+    data.sample_rate_hz   = config_.sample_rate_hz;
+    data.measured_sample_rate_hz =
+        measured_sample_rate_hz_ ? measured_sample_rate_hz_ : config_.sample_rate_hz;
+    data.lifetime_sample_rate_hz =
+        lifetime_sample_rate_hz_ ? lifetime_sample_rate_hz_ : data.measured_sample_rate_hz;
+    data.latest_raw   = latest_raw_;
     data.latest_volts = {{
         (static_cast<double>(latest_raw_[0]) * config_.vref) / 4095.0,
         (static_cast<double>(latest_raw_[1]) * config_.vref) / 4095.0
     }};
-    data.total_frames = total_frames_;
-    data.dropped_reads = dropped_reads_;
-    data.overruns = overruns_;
-    data.max_overrun_us = max_overrun_us_;
-    data.avg_frame_read_us = avg_frame_read_us_;
-    data.max_frame_read_us = max_frame_read_us_;
-    data.avg_mutex_wait_us = avg_mutex_wait_us_;
-    data.max_mutex_wait_us = max_mutex_wait_us_;
-    data.avg_mutex_hold_us = avg_mutex_hold_us_;
-    data.max_mutex_hold_us = max_mutex_hold_us_;
-    data.snapshot_count = snapshot_count_;
+    data.total_frames          = total_frames_;
+    data.dropped_reads         = dropped_reads_;
+    data.overruns              = overruns_;
+    data.max_overrun_us        = max_overrun_us_;
+    data.avg_frame_read_us     = avg_frame_read_us_;
+    data.max_frame_read_us     = max_frame_read_us_;
+    data.avg_mutex_wait_us     = avg_mutex_wait_us_;
+    data.max_mutex_wait_us     = max_mutex_wait_us_;
+    data.avg_mutex_hold_us     = avg_mutex_hold_us_;
+    data.max_mutex_hold_us     = max_mutex_hold_us_;
+    data.snapshot_count        = snapshot_count_;
     data.snapshot_samples_copied = snapshot_samples_copied_;
-    data.realtime_requested = config_.realtime;
-    data.realtime_active = realtime_active_;
-    data.realtime_priority = config_.realtime_priority;
-    data.cpu_affinity = config_.cpu_affinity;
-    data.scheduler_status = scheduler_status_;
-    data.valid_samples = valid_samples_;
-    data.history_capacity_samples = ring_[0].size();
-    data.last_error = last_error_;
+    data.realtime_requested    = config_.realtime;
+    data.realtime_active       = realtime_active_;
+    data.realtime_priority     = config_.realtime_priority;
+    data.cpu_affinity          = config_.cpu_affinity;
+    data.scheduler_status      = scheduler_status_;
+    // RP2040
+    data.rp2040_dev                = config_.rp2040_dev;
+    data.rp2040_connected          = rp2040_connected_;
+    data.rp2040_packets_ok         = rp2040_packets_ok_;
+    data.rp2040_packets_crc_bad    = rp2040_packets_crc_bad_;
+    data.rp2040_sequence_gaps      = rp2040_sequence_gaps_;
+    data.rp2040_firmware_lost_frames = rp2040_firmware_lost_frames_;
+    data.rp2040_firmware_flags     = rp2040_firmware_flags_;
+    data.rp2040_declared_rate_hz   = rp2040_declared_rate_hz_;
+    data.valid_samples             = valid_samples_;
+    data.history_capacity_samples  = ring_[0].size();
+    data.last_error                = last_error_;
 }
 
 AdcScopeData AdcSampler::status() const {
