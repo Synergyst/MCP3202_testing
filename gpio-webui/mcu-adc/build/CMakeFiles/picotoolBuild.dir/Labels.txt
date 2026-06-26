@@ -1,0 +1,14 @@
+# Target labels
+ picotoolBuild
+# Source files and their labels
+/root/mcp-adc/gpio-webui/mcu-adc/build/CMakeFiles/picotoolBuild
+/root/mcp-adc/gpio-webui/mcu-adc/build/CMakeFiles/picotoolBuild.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/CMakeFiles/picotoolBuild-complete.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-build.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-configure.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-download.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-install.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-mkdir.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-patch.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-test.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-update.rule

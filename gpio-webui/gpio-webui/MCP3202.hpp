@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -38,6 +39,7 @@ public:
     bool isOpen() const;
 
     uint16_t readChannel(int channel);
+    std::array<uint16_t, 2> readBothChannels();
     double rawToVolts(uint16_t raw, double vref = 3.3) const;
 
 private:

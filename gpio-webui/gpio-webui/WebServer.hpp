@@ -27,7 +27,9 @@ private:
     void setup_routes();
     std::string serialize_state();
     std::string serialize_adc_scope(size_t max_points, const std::string& view = "raw", const std::string& effects_csv = "");
-    std::string build_adc_wav(const std::string& mode, size_t duration_ms, const std::string& effects_csv, const std::string& codec, std::string& filename, std::string& content_type);
+    std::string build_adc_wav(const std::string& mode, size_t duration_ms, const std::string& effects_csv, const std::string& codec,
+                              std::string& filename, std::string& content_type, size_t& requested_ms, size_t& actual_ms,
+                              size_t& available_ms, bool& truncated);
 
     httplib::Server svr;
     std::map<int, std::shared_ptr<PinState>>& registry;

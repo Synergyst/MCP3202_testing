@@ -1,0 +1,7 @@
+/root/mcp-adc/gpio-webui/mcu-adc/build/_deps/picotool/picotool
+/root/mcp-adc/gpio-webui/mcu-adc/build/_deps/picotool/picotoolTargets.cmake
+/root/mcp-adc/gpio-webui/mcu-adc/build/_deps/picotool/picotoolTargets-release.cmake
+/root/mcp-adc/gpio-webui/mcu-adc/build/_deps/picotool/picotoolConfig.cmake
+/root/mcp-adc/gpio-webui/mcu-adc/build/_deps/picotool/picotoolConfigVersion.cmake
+/root/mcp-adc/gpio-webui/mcu-adc/build/_deps/picotool/enc_bootloader.elf
+/root/mcp-adc/gpio-webui/mcu-adc/build/_deps/picotool/enc_bootloader_mbedtls.elf

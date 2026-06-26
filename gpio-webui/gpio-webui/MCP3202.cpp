@@ -16,6 +16,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <array>
 
 namespace {
 constexpr size_t GPIO_BLOCK_SIZE = 4096;
@@ -102,27 +103,28 @@ void MCP3202::openHardwareSpi() {
 
         if (config_.cs_bcm >= 0) {
             validateBcm(config_.cs_bcm, "cs_bcm");
-            std::string chip_path = "/dev/gpiochip" + config_.gpio_chip;
-            int chip_fd = ::open(chip_path.c_str(), O_RDONLY | O_CLOEXEC);
-            if (chip_fd < 0) {
-                throw std::runtime_error(errnoMessage("opening " + chip_path + " for MCP3202 software CS"));
+
+            // Fast software chip-select for hardware-SPI mode.
+            // The old implementation used GPIOHANDLE_SET_LINE_VALUES_IOCTL for
+            // every ADC conversion. At audio-ish rates that adds multiple kernel
+            // GPIO ioctls per two-channel sample frame and caps the achievable
+            // sample rate well below the requested rate. Use direct GPIO register
+            // writes instead, while still using spidev for the SPI clock/data.
+            gpiomem_fd_ = ::open("/dev/gpiomem", O_RDWR | O_SYNC | O_CLOEXEC);
+            if (gpiomem_fd_ < 0) {
+                gpiomem_fd_ = ::open("/dev/mem", O_RDWR | O_SYNC | O_CLOEXEC);
+                if (gpiomem_fd_ < 0) {
+                    throw std::runtime_error(errnoMessage("opening /dev/gpiomem or /dev/mem for MCP3202 fast software CS"));
+                }
             }
 
-            gpiohandle_request req{};
-            req.lineoffsets[0] = static_cast<__u32>(config_.cs_bcm);
-            req.flags = GPIOHANDLE_REQUEST_OUTPUT;
-            req.default_values[0] = 1; // MCP3202 CS idle high
-            req.lines = 1;
-            std::snprintf(req.consumer_label, sizeof(req.consumer_label), "mcp3202_cs");
-
-            if (::ioctl(chip_fd, GPIO_GET_LINEHANDLE_IOCTL, &req) < 0) {
-                int saved = errno;
-                ::close(chip_fd);
-                errno = saved;
-                throw std::runtime_error(errnoMessage("requesting BCM" + std::to_string(config_.cs_bcm) + " as MCP3202 CS"));
+            gpio_ = static_cast<volatile uint32_t*>(::mmap(nullptr, GPIO_BLOCK_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, gpiomem_fd_, 0));
+            if (gpio_ == MAP_FAILED) {
+                gpio_ = nullptr;
+                throw std::runtime_error(errnoMessage("mapping GPIO registers for MCP3202 fast software CS"));
             }
-            ::close(chip_fd);
-            cs_fd_ = req.fd;
+            gpioSetOutput(config_.cs_bcm);
+            gpioWrite(config_.cs_bcm, true); // idle high, active low
         }
     } catch (...) {
         close();
@@ -207,9 +209,17 @@ void MCP3202::configureSpi() {
 }
 
 void MCP3202::setSoftwareCs(bool selected) {
+    // Active-low chip select. Prefer direct GPIO register writes when available
+    // because this is called for every hardware-SPI ADC conversion.
+    if (gpio_) {
+        gpioWrite(config_.cs_bcm, !selected);
+        return;
+    }
+
+    // Legacy fallback retained for safety if a future path opens cs_fd_.
     if (cs_fd_ < 0) return;
     gpiohandle_data data{};
-    data.values[0] = selected ? 0 : 1; // active-low chip select
+    data.values[0] = selected ? 0 : 1;
     if (::ioctl(cs_fd_, GPIOHANDLE_SET_LINE_VALUES_IOCTL, &data) < 0) {
         throw std::runtime_error(errnoMessage("setting MCP3202 software CS"));
     }
@@ -221,6 +231,50 @@ uint16_t MCP3202::readChannel(int channel) {
     }
     if (!isOpen()) open();
     return config_.bitbang ? readChannelBitBang(channel) : readChannelHardwareSpi(channel);
+}
+
+std::array<uint16_t, 2> MCP3202::readBothChannels() {
+    if (!isOpen()) open();
+
+    if (config_.bitbang) {
+        return {{readChannelBitBang(0), readChannelBitBang(1)}};
+    }
+
+    // If the SPI controller owns chip-select (cs_bcm < 0), batch both channel
+    // conversions into one SPI_IOC_MESSAGE(2). cs_change plus a 1 us delay gives
+    // the MCP3202 the required CS-high interval between conversions while cutting
+    // userspace/kernel crossings from two ioctls per frame to one.
+    if (config_.cs_bcm < 0) {
+        uint8_t tx[2][3] = {
+            {0x01, 0xA0, 0x00}, // CH0 single-ended, MSB first
+            {0x01, 0xE0, 0x00}  // CH1 single-ended, MSB first
+        };
+        uint8_t rx[2][3] = {{0, 0, 0}, {0, 0, 0}};
+        spi_ioc_transfer tr[2]{};
+        for (int i = 0; i < 2; ++i) {
+            tr[i].tx_buf = reinterpret_cast<unsigned long>(tx[i]);
+            tr[i].rx_buf = reinterpret_cast<unsigned long>(rx[i]);
+            tr[i].len = 3;
+            tr[i].speed_hz = config_.speed_hz;
+            tr[i].bits_per_word = config_.bits_per_word;
+        }
+        tr[0].cs_change = 1;
+        tr[0].delay_usecs = 1; // MCP3202 tCSH minimum is 500 ns.
+
+        int rc = ::ioctl(fd_, SPI_IOC_MESSAGE(2), tr);
+        if (rc < 1) {
+            throw std::runtime_error(errnoMessage("MCP3202 dual SPI transfer"));
+        }
+        return {{
+            static_cast<uint16_t>(((rx[0][1] & 0x0F) << 8) | rx[0][2]),
+            static_cast<uint16_t>(((rx[1][1] & 0x0F) << 8) | rx[1][2])
+        }};
+    }
+
+    // Software CS must be deasserted between conversions, so keep the separate
+    // transfers in this mode. Direct register CS writes make this path cheap, but
+    // it still uses two SPI ioctls per two-channel frame.
+    return {{readChannelHardwareSpi(0), readChannelHardwareSpi(1)}};
 }
 
 uint16_t MCP3202::readChannelHardwareSpi(int channel) {

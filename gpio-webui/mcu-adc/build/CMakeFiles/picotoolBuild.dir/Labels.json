@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/CMakeFiles/picotoolBuild"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/CMakeFiles/picotoolBuild.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/CMakeFiles/picotoolBuild-complete.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-build.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-configure.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-download.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-install.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-mkdir.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-patch.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-test.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool/src/picotoolBuild-stamp/picotoolBuild-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"picotoolBuild"
+		],
+		"name" : "picotoolBuild"
+	}
+}

@@ -101,6 +101,21 @@ GraphBiquad makeGraphBandpass(double sample_rate, double center_hz, double q) {
     return f;
 }
 
+GraphBiquad makeGraphNotch(double sample_rate, double center_hz, double q) {
+    GraphBiquad f;
+    if (sample_rate <= 0.0 || center_hz <= 0.0 || center_hz >= sample_rate * 0.45 || q <= 0.0) return f;
+    const double w0 = 2.0 * M_PI * center_hz / sample_rate;
+    const double alpha = std::sin(w0) / (2.0 * q);
+    const double cosw0 = std::cos(w0);
+    const double a0 = 1.0 + alpha;
+    f.b0 = 1.0 / a0;
+    f.b1 = (-2.0 * cosw0) / a0;
+    f.b2 = 1.0 / a0;
+    f.a1 = (-2.0 * cosw0) / a0;
+    f.a2 = (1.0 - alpha) / a0;
+    return f;
+}
+
 std::vector<uint16_t> applyGraphEffectsToChannel(const std::vector<uint16_t>& raw, uint32_t sample_rate, const std::string& effects_csv) {
     if (raw.empty()) return {};
     std::vector<double> x;
@@ -114,6 +129,18 @@ std::vector<uint16_t> applyGraphEffectsToChannel(const std::vector<uint16_t>& ra
             for (double v : x) mean += v;
             mean /= static_cast<double>(std::max<size_t>(1, x.size()));
             for (double& v : x) v -= mean;
+        } else if (effect == "hum_notch_60" || effect == "hum_notch_120") {
+            GraphBiquad notch = makeGraphNotch(std::max<double>(1.0, sample_rate), effect == "hum_notch_60" ? 60.0 : 120.0, 35.0);
+            for (double& sample : x) sample = notch.process(sample);
+        } else if (effect == "voice_agc") {
+            double gain = 1.0;
+            for (double& sample : x) {
+                double desired = 9000.0 / std::max(1000.0, std::abs(sample * 16.0));
+                desired = std::max(0.25, std::min(8.0, desired));
+                const double coeff = desired < gain ? 0.10 : 0.003;
+                gain += coeff * (desired - gain);
+                sample *= gain;
+            }
         } else if (effect == "pots_bandpass" || effect == "bell202_bandpass") {
             const double fs = std::max<double>(1.0, sample_rate);
             const double hp_cut = (effect == "bell202_bandpass") ? 700.0 : 300.0;
@@ -267,6 +294,11 @@ const char* HTML_UI = R"html(
         .status-ok { color: #00ff87; background: rgba(0,255,135,.12); border-color: #00ff87; }
         .status-bad { color: #ff6b6b; background: rgba(255,65,65,.12); border-color: #ff4141; }
         .tiny { color: #777; font-size: .78rem; margin-top: 8px; }
+        .tabs { display:flex; gap:8px; flex-wrap:wrap; width:100%; max-width:1200px; margin: 0 0 16px 0; }
+        .tab-btn { background:#1e1e1e; color:#d8d8d8; border:1px solid #333; border-radius:8px; padding:10px 14px; cursor:pointer; }
+        .tab-btn.active { background:#00adb5; color:#fff; border-color:#00f5ff; }
+        .tab-panel { display:none; width:100%; max-width:1200px; }
+        .tab-panel.active { display:block; }
     </style>
 </head>
 <body class="__BODY_CLASS__">
@@ -278,6 +310,14 @@ const char* HTML_UI = R"html(
         <button onclick="updateTimeout()">Apply</button>
     </div>
 
+    <div class="tabs">
+        <button class="tab-btn active" data-tab="scope" onclick="selectTab('scope')">Scope / Audio</button>
+        <button class="tab-btn" data-tab="caller" onclick="selectTab('caller')">Caller ID</button>
+        <button class="tab-btn" data-tab="telephony" onclick="selectTab('telephony')">Telephony</button>
+        <button class="tab-btn" data-tab="gpio" onclick="selectTab('gpio')">GPIO</button>
+    </div>
+
+    <div class="tab-panel active" id="tab-scope">
     <div class="card scope-card" id="adcScopeCard">
         <div class="card-header">
             <div>
@@ -293,6 +333,7 @@ const char* HTML_UI = R"html(
             <span style="color:#ffcf33">CH1: <b id="adcLatest1">-</b></span>
             <span>Frames: <b id="adcSamples">-</b></span>
             <span>Dropped: <b id="adcDropped">-</b></span>
+            <span>History: <b id="adcHistory">-</b></span>
             <span id="adcErr" style="color:#ff8a80"></span>
         </div>
         <div class="scope-wrap"><canvas id="adcScope" width="1200" height="220"></canvas></div>
@@ -320,8 +361,10 @@ const char* HTML_UI = R"html(
                 <option value="pcm16">WAV PCM 16-bit</option>
             </select>
             <button onclick="downloadWav()">Download Audio</button>
+            <button onclick="previewWav()">Preview Audio</button>
             <span class="record-status" id="wavStatus"></span>
-            <span class="record-help">Downloads the newest n ms already held in the ADC ring buffer as 16-bit PCM.</span>
+            <span class="record-help">Downloads or previews the newest n ms already held in the ADC ring buffer as 16-bit PCM.</span>
+            <audio id="audioPreview" controls style="width:100%; max-width:520px; display:none;"></audio>
         </div>
         <div class="config-panel record-panel effects-panel">
             <label>Effects:</label>
@@ -329,7 +372,9 @@ const char* HTML_UI = R"html(
         </div>
         <div class="tiny"><span style="color:#00ff87">CH0 is green</span>, <span style="color:#ffcf33">CH1 is amber</span>. The scope endpoint returns recent ring-buffer history with min/max decimation so audio peaks remain visible while the browser polls at UI speed.</div>
     </div>
+    </div>
 
+    <div class="tab-panel" id="tab-caller">
     <div class="card cid-card" id="callerIdCard">
         <div class="card-header">
             <div>
@@ -368,7 +413,9 @@ const char* HTML_UI = R"html(
         <div class="cid-raw" id="cidRaw">Raw FSK bits/bytes will appear here when detected.</div>
         <div class="cid-raw" id="cidBestRaw">Best confidence FSK bits/bytes will appear here.</div>
     </div>
+    </div>
 
+    <div class="tab-panel" id="tab-telephony">
     <div class="card cid-card" id="telephonyCard">
         <div class="card-header"><div><span class="pin-title">CH1817 DAA</span><span class="bcm-tag">OFFHK + RI</span></div><span class="status-pill" id="chStatus">-</span></div>
         <div class="cid-grid">
@@ -380,15 +427,27 @@ const char* HTML_UI = R"html(
         </div>
         <div class="tiny" id="chHelp"></div>
     </div>
+    </div>
 
-
-
+    <div class="tab-panel" id="tab-gpio">
     <div class="grid" id="pinGrid"></div>
+    </div>
     <script>
         let timeoutInputLockExpiration = 0;
 
         function lockTimeoutInput() {
             timeoutInputLockExpiration = Date.now() + 5000;
+        }
+
+        function selectTab(name) {
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            const panel = document.getElementById(`tab-${name}`);
+            const btn = document.querySelector(`.tab-btn[data-tab="${name}"]`);
+            if (panel) panel.classList.add('active');
+            if (btn) btn.classList.add('active');
+            saveUiPref('activeTab', name);
+            if (name === 'scope') fetchAdcScope();
         }
 
         function ensurePinCard(pinId, pin) {
@@ -625,6 +684,9 @@ const char* HTML_UI = R"html(
             document.getElementById('adcLatest1').textContent = `${raw[1] ?? 0} (${(volts[1] ?? 0).toFixed(3)} V)`;
             document.getElementById('adcSamples').textContent = data.total_frames ?? 0;
             document.getElementById('adcDropped').textContent = data.dropped_reads ?? 0;
+            const availMs = data.available_history_ms || 0;
+            const capMs = data.history_capacity_ms || 0;
+            document.getElementById('adcHistory').textContent = capMs ? `${(availMs/1000).toFixed(1)}s / ${(capMs/1000).toFixed(1)}s` : '-';
             document.getElementById('adcErr').textContent = data.last_error || '';
         }
 
@@ -720,6 +782,7 @@ const char* HTML_UI = R"html(
                 const data = await res.json();
                 const effectsList = document.getElementById('effectsList');
                 effectsList.innerHTML = '';
+                const savedEffects = loadUiPref('effects', 'dc_block').split(',').filter(Boolean);
                 for (const effect of (data.effects || [])) {
                     const label = document.createElement('label');
                     label.className = `effect-item ${effect.available ? '' : 'disabled'}`;
@@ -728,8 +791,8 @@ const char* HTML_UI = R"html(
                     input.type = 'checkbox';
                     input.value = effect.id;
                     input.disabled = !effect.available;
-                    if (effect.id === 'dc_block') input.checked = true;
-                    input.addEventListener('change', fetchAdcScope);
+                    input.checked = savedEffects.includes(effect.id);
+                    input.addEventListener('change', () => { saveAudioUiPrefs(); fetchAdcScope(); });
                     label.appendChild(input);
                     label.appendChild(document.createTextNode(effect.label || effect.id));
                     effectsList.appendChild(label);
@@ -741,12 +804,41 @@ const char* HTML_UI = R"html(
                     opt.value = codec.id;
                     opt.textContent = codec.label || codec.id;
                     opt.disabled = !codec.available;
-                    if (codec.id === 'pcm16') opt.selected = true;
+                    if (codec.id === loadUiPref('audioCodec', 'pcm16')) opt.selected = true;
                     codecSelect.appendChild(opt);
                 }
+                codecSelect.addEventListener('change', saveAudioUiPrefs);
+                saveAudioUiPrefs();
             } catch (err) {
                 document.getElementById('effectsList').textContent = `Unable to load audio modules: ${err}`;
             }
+        }
+
+        const UI_PREF_PREFIX = 'cm4gpio.';
+        function saveUiPref(key, value) { try { localStorage.setItem(UI_PREF_PREFIX + key, value); } catch (_) {} }
+        function loadUiPref(key, fallback='') { try { return localStorage.getItem(UI_PREF_PREFIX + key) ?? fallback; } catch (_) { return fallback; } }
+
+        function saveAudioUiPrefs() {
+            const dur = document.getElementById('wavDuration');
+            const mode = document.getElementById('wavMode');
+            const codec = document.getElementById('audioCodec');
+            const graph = document.getElementById('graphView');
+            if (dur) saveUiPref('wavDuration', dur.value);
+            if (mode) saveUiPref('wavMode', mode.value);
+            if (codec) saveUiPref('audioCodec', codec.value);
+            if (graph) saveUiPref('graphView', graph.value);
+            saveUiPref('effects', selectedEffectsCsv());
+        }
+
+        function restoreSimpleUiPrefs() {
+            const dur = document.getElementById('wavDuration');
+            const mode = document.getElementById('wavMode');
+            const graph = document.getElementById('graphView');
+            if (dur) dur.value = loadUiPref('wavDuration', dur.value || '1000');
+            if (mode) mode.value = loadUiPref('wavMode', mode.value || 'ch0');
+            if (graph) graph.value = loadUiPref('graphView', graph.value || 'raw');
+            [dur, mode, graph].forEach(el => { if (el) el.addEventListener('change', saveAudioUiPrefs); });
+            if (dur) dur.addEventListener('input', saveAudioUiPrefs);
         }
 
         function selectedEffectsCsv() {
@@ -755,25 +847,34 @@ const char* HTML_UI = R"html(
                 .join(',');
         }
 
-        async function downloadWav() {
+        function currentWavUrl() {
             const durInput = document.getElementById('wavDuration');
             const modeSelect = document.getElementById('wavMode');
             const codecSelect = document.getElementById('audioCodec');
-            const status = document.getElementById('wavStatus');
             const ms = Math.max(1, Math.min(600000, parseInt(durInput.value || '1000', 10)));
             durInput.value = ms;
             const mode = modeSelect.value;
             const codec = codecSelect.value || 'pcm16';
             const effects = selectedEffectsCsv();
+            saveAudioUiPrefs();
+            return `/api/adc/wav?ms=${encodeURIComponent(ms)}&mode=${encodeURIComponent(mode)}&codec=${encodeURIComponent(codec)}&effects=${encodeURIComponent(effects)}`;
+        }
+
+        async function downloadWav() {
+            const status = document.getElementById('wavStatus');
             status.textContent = 'Preparing download...';
             try {
-                const res = await fetch(`/api/adc/wav?ms=${encodeURIComponent(ms)}&mode=${encodeURIComponent(mode)}&codec=${encodeURIComponent(codec)}&effects=${encodeURIComponent(effects)}`);
+                const res = await fetch(currentWavUrl());
                 if (!res.ok) {
                     let msg = `HTTP ${res.status}`;
                     try { const j = await res.json(); msg = j.error || msg; } catch (_) {}
                     throw new Error(msg);
                 }
                 const blob = await res.blob();
+                const requestedMs = parseInt(res.headers.get('X-Requested-Duration-Ms') || '0', 10);
+                const actualMs = parseInt(res.headers.get('X-Actual-Duration-Ms') || '0', 10);
+                const availableMs = parseInt(res.headers.get('X-Available-Duration-Ms') || '0', 10);
+                const truncated = (res.headers.get('X-Wav-Truncated') || 'false') === 'true';
                 const cd = res.headers.get('Content-Disposition') || '';
                 const m = cd.match(/filename="?([^";]+)"?/i);
                 const filename = m ? m[1] : `mcp3202_${mode}_${ms}ms.wav`;
@@ -785,9 +886,40 @@ const char* HTML_UI = R"html(
                 a.click();
                 a.remove();
                 URL.revokeObjectURL(url);
-                status.textContent = `Downloaded ${filename}`;
+                status.textContent = truncated
+                    ? `Downloaded ${filename} — truncated to ${actualMs} ms; only ${availableMs} ms available.`
+                    : `Downloaded ${filename}${actualMs ? ` (${actualMs} ms)` : ''}`;
             } catch (err) {
                 status.textContent = `Download failed: ${err.message || err}`;
+            }
+        }
+
+        async function previewWav() {
+            const status = document.getElementById('wavStatus');
+            const player = document.getElementById('audioPreview');
+            status.textContent = 'Preparing preview...';
+            try {
+                const res = await fetch(currentWavUrl());
+                if (!res.ok) {
+                    let msg = `HTTP ${res.status}`;
+                    try { const j = await res.json(); msg = j.error || msg; } catch (_) {}
+                    throw new Error(msg);
+                }
+                const actualMs = parseInt(res.headers.get('X-Actual-Duration-Ms') || '0', 10);
+                const availableMs = parseInt(res.headers.get('X-Available-Duration-Ms') || '0', 10);
+                const truncated = (res.headers.get('X-Wav-Truncated') || 'false') === 'true';
+                const blob = await res.blob();
+                if (player.dataset.objectUrl) URL.revokeObjectURL(player.dataset.objectUrl);
+                const url = URL.createObjectURL(blob);
+                player.dataset.objectUrl = url;
+                player.src = url;
+                player.style.display = 'block';
+                await player.play().catch(() => {});
+                status.textContent = truncated
+                    ? `Preview ready — truncated to ${actualMs} ms; only ${availableMs} ms available.`
+                    : `Preview ready${actualMs ? ` (${actualMs} ms)` : ''}`;
+            } catch (err) {
+                status.textContent = `Preview failed: ${err.message || err}`;
             }
         }
 
@@ -811,7 +943,7 @@ const char* HTML_UI = R"html(
         setInterval(fetchStatus, 250);
         if (ADC_ENABLED) { setInterval(fetchAdcScope, 120); setInterval(fetchCallerId, 1000); }
         setInterval(fetchTelephony, 500);
-        window.onload = () => { fetchStatus(); wireCallerIdTuneDirty(); if (ADC_ENABLED) { fetchAdcScope(); fetchCallerId(); loadAudioModules(); } fetchTelephony(); };
+        window.onload = () => { restoreSimpleUiPrefs(); selectTab(loadUiPref('activeTab', 'scope')); fetchStatus(); wireCallerIdTuneDirty(); if (ADC_ENABLED) { loadAudioModules().then(() => fetchAdcScope()); fetchCallerId(); } fetchTelephony(); };
     </script>
 </body>
 </html>
@@ -866,7 +998,8 @@ void WebServer::setup_routes() {
         }
         size_t points = 1600;
         if (req.has_param("points")) {
-            points = std::max<size_t>(100, std::min<size_t>(5000, std::strtoul(req.get_param_value("points").c_str(), nullptr, 10)));
+            const size_t requested_points = std::strtoul(req.get_param_value("points").c_str(), nullptr, 10);
+            points = requested_points == 0 ? 0 : std::max<size_t>(100, std::min<size_t>(5000, requested_points));
         }
         std::string view = req.has_param("view") ? req.get_param_value("view") : "raw";
         std::string effects = req.has_param("effects") ? req.get_param_value("effects") : "";
@@ -949,9 +1082,16 @@ void WebServer::setup_routes() {
         std::string filename;
         std::string content_type;
         try {
-            std::string payload = build_adc_wav(mode, duration_ms, effects, codec, filename, content_type);
+            size_t requested_ms = 0, actual_ms = 0, available_ms = 0;
+            bool truncated = false;
+            std::string payload = build_adc_wav(mode, duration_ms, effects, codec, filename, content_type,
+                                                requested_ms, actual_ms, available_ms, truncated);
             res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
             res.set_header("Cache-Control", "no-store");
+            res.set_header("X-Requested-Duration-Ms", std::to_string(requested_ms));
+            res.set_header("X-Actual-Duration-Ms", std::to_string(actual_ms));
+            res.set_header("X-Available-Duration-Ms", std::to_string(available_ms));
+            res.set_header("X-Wav-Truncated", truncated ? "true" : "false");
             res.set_content(payload.data(), payload.size(), content_type.c_str());
         } catch (const std::exception& e) {
             res.status = 400;
@@ -1036,7 +1176,7 @@ std::string WebServer::serialize_adc_scope(size_t max_points, const std::string&
     }
 
     const std::string safe_view = (view == "filtered" || view == "overlay") ? view : "raw";
-    auto s = adc_sampler->snapshot(max_points);
+    auto s = (max_points == 0) ? adc_sampler->status() : adc_sampler->snapshot(max_points);
     const uint32_t sr = s.measured_sample_rate_hz ? s.measured_sample_rate_hz : s.sample_rate_hz;
 
     j["enabled"] = s.enabled;
@@ -1045,10 +1185,30 @@ std::string WebServer::serialize_adc_scope(size_t max_points, const std::string&
     j["bitbang"] = s.bitbang;
     j["sample_rate_hz"] = s.sample_rate_hz;
     j["measured_sample_rate_hz"] = s.measured_sample_rate_hz;
+    j["lifetime_sample_rate_hz"] = s.lifetime_sample_rate_hz;
     j["latest_raw"] = {s.latest_raw[0], s.latest_raw[1]};
     j["latest_volts"] = {s.latest_volts[0], s.latest_volts[1]};
     j["total_frames"] = s.total_frames;
     j["dropped_reads"] = s.dropped_reads;
+    j["overruns"] = s.overruns;
+    j["max_overrun_us"] = s.max_overrun_us;
+    j["avg_frame_read_us"] = s.avg_frame_read_us;
+    j["max_frame_read_us"] = s.max_frame_read_us;
+    j["avg_mutex_wait_us"] = s.avg_mutex_wait_us;
+    j["max_mutex_wait_us"] = s.max_mutex_wait_us;
+    j["avg_mutex_hold_us"] = s.avg_mutex_hold_us;
+    j["max_mutex_hold_us"] = s.max_mutex_hold_us;
+    j["snapshot_count"] = s.snapshot_count;
+    j["snapshot_samples_copied"] = s.snapshot_samples_copied;
+    j["realtime_requested"] = s.realtime_requested;
+    j["realtime_active"] = s.realtime_active;
+    j["realtime_priority"] = s.realtime_priority;
+    j["cpu_affinity"] = s.cpu_affinity;
+    j["scheduler_status"] = s.scheduler_status;
+    j["valid_samples"] = s.valid_samples;
+    j["history_capacity_samples"] = s.history_capacity_samples;
+    j["available_history_ms"] = (static_cast<uint64_t>(s.valid_samples) * 1000ull) / std::max<uint32_t>(1, sr);
+    j["history_capacity_ms"] = (static_cast<uint64_t>(s.history_capacity_samples) * 1000ull) / std::max<uint32_t>(1, sr);
     j["last_error"] = s.last_error;
     j["graph_view"] = safe_view;
     j["graph_effects"] = effects_csv;
@@ -1073,18 +1233,24 @@ std::string WebServer::serialize_adc_scope(size_t max_points, const std::string&
     return j.dump();
 }
 
-std::string WebServer::build_adc_wav(const std::string& mode, size_t duration_ms, const std::string& effects_csv, const std::string& codec, std::string& filename, std::string& content_type) {
+std::string WebServer::build_adc_wav(const std::string& mode, size_t duration_ms, const std::string& effects_csv, const std::string& codec,
+                                    std::string& filename, std::string& content_type, size_t& requested_ms, size_t& actual_ms,
+                                    size_t& available_ms, bool& truncated) {
     if (!adc_sampler) throw std::runtime_error("ADC sampler not configured");
 
     const auto options = AudioProcessing::parseOptions(effects_csv, codec);
-    const auto meta = adc_sampler->snapshot(1);
+    const auto meta = adc_sampler->status();
     const uint32_t sample_rate = std::max<uint32_t>(1, meta.measured_sample_rate_hz ? meta.measured_sample_rate_hz : meta.sample_rate_hz);
     // Duration selects how much ring-buffer history to copy. Use the measured rate so the downloaded WAV
     // has both the requested duration and the correct playback pitch even if Linux can't hit the requested rate exactly.
+    requested_ms = duration_ms;
     const size_t requested_frames = std::max<size_t>(1, (static_cast<uint64_t>(sample_rate) * duration_ms + 999) / 1000);
     const auto data = adc_sampler->recent(requested_frames);
     const size_t frames = std::min(data.samples[0].size(), data.samples[1].size());
     if (frames == 0) throw std::runtime_error("No ADC samples available yet");
+    available_ms = (static_cast<uint64_t>(data.valid_samples) * 1000ull) / std::max<uint32_t>(1, sample_rate);
+    actual_ms = (static_cast<uint64_t>(frames) * 1000ull) / std::max<uint32_t>(1, sample_rate);
+    truncated = frames < requested_frames;
 
     enum class WavMode { Ch0, Ch1, Stereo, Mix };
     WavMode wav_mode;
@@ -1128,7 +1294,6 @@ std::string WebServer::build_adc_wav(const std::string& mode, size_t duration_ms
     AudioProcessing::applyEffects(buffer, options);
     std::string payload = AudioProcessing::encodeWav(buffer, options);
 
-    const size_t actual_ms = (frames * 1000ull) / sample_rate;
     std::string effects_part = options.effects.empty() ? "dry" : AudioProcessing::sanitizeForFilename(effects_csv);
     filename = "mcp3202_" + safe_mode + "_" + effects_part + "_" + std::to_string(actual_ms) + "ms_" + std::to_string(sample_rate) + "hz.wav";
     content_type = "audio/wav";

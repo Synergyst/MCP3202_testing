@@ -256,7 +256,7 @@ void CallerIdDetector::updateSettingsFromJson(const json& j) {
 void CallerIdDetector::worker() {
     while (running_) {
         try {
-            const auto adc = sampler_->snapshot(1);
+            const auto adc = sampler_->status();
             if (!adc.healthy || adc.total_frames < 1000) {
                 std::lock_guard<std::mutex> lock(mtx_);
                 state_.enabled = true;
@@ -308,7 +308,7 @@ CallerIdDetector::DecodeCandidate CallerIdDetector::analyzeRecent() {
         cfg = settings_;
     }
 
-    const auto meta = sampler_->snapshot(1);
+    const auto meta = sampler_->status();
     const uint32_t sr = std::max<uint32_t>(1, meta.measured_sample_rate_hz ? meta.measured_sample_rate_hz : meta.sample_rate_hz);
     const size_t frames = std::min<size_t>((static_cast<size_t>(sr) * std::max<size_t>(250, cfg.analysis_ms) + 999) / 1000, MAX_ANALYZE_FRAMES);
     const auto recent = sampler_->recent(frames);

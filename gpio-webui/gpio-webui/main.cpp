@@ -49,8 +49,13 @@ void printUsage(const char* argv0, std::ostream& os) {
        << "  --adc-bitbang                      Use GPIO bit-banged SPI for MCP3202\n"
        << "  --adc-hw-spi                       Use Linux spidev hardware SPI (default)\n"
        << "  --adc-rate HZ                      ADC two-channel frame rate (default 8000)\n"
-       << "  --adc-history N                    Samples of history per channel (default rate*4)\n"
+       << "  --adc-history N                    Samples of history per channel (overrides duration defaults)\n"
+       << "  --adc-history-ms MS                Ring-buffer history duration in milliseconds (default 30000)\n"
+       << "  --adc-max-buffer-mb MB             Cap ADC ring-buffer RAM usage for both channels (default 64)\n"
        << "  --adc-vref VOLTS                   ADC reference voltage for display (default 3.3)\n"
+       << "  --adc-realtime                     Run ADC sampler thread with modest SCHED_FIFO priority\n"
+       << "  --adc-rt-priority N                SCHED_FIFO priority for --adc-realtime (1..99, default 10)\n"
+       << "  --adc-cpu N                        Pin ADC sampler thread to CPU N (-1 disables affinity)\n"
        << "  --spi-dev PATH                     spidev node (default /dev/spidev0.0)\n"
        << "  --spi-speed HZ                     SPI clock speed (default 1000000)\n"
        << "  --adc-cs-bcm N                     ADC chip-select BCM GPIO, or -1 for controller CE\n"
@@ -194,11 +199,14 @@ int main(int argc, char* argv[]) {
     bool custom_bcm_list = false;
     std::vector<int> custom_phys;
     std::vector<int> custom_bcm;
+    bool adc_history_samples_explicit = false;
+    uint64_t adc_history_ms = 30000; // default: keep 30 seconds of recent ADC history
+    uint64_t adc_max_buffer_mb = 64; // cap combined CH0+CH1 ring buffer RAM
 
     AdcSampler::Config adc_config;
     adc_config.enabled = true;
     adc_config.sample_rate_hz = 8000;
-    adc_config.history_samples = adc_config.sample_rate_hz * 4;
+    adc_config.history_samples = adc_config.sample_rate_hz * 30;
     adc_config.vref = 3.3;
     adc_config.adc.bitbang = false;
     adc_config.adc.device = "/dev/spidev0.0";
@@ -236,11 +244,30 @@ int main(int argc, char* argv[]) {
                 int v = parseIntStrict(requireValue(i, argc, argv, arg), arg);
                 if (v <= 0) throw std::runtime_error("--adc-history must be positive");
                 adc_config.history_samples = static_cast<size_t>(v);
+                adc_history_samples_explicit = true;
+            } else if (arg == "--adc-history-ms") {
+                int v = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                if (v <= 0) throw std::runtime_error("--adc-history-ms must be positive");
+                adc_history_ms = static_cast<uint64_t>(v);
+            } else if (arg == "--adc-max-buffer-mb") {
+                int v = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                if (v <= 0) throw std::runtime_error("--adc-max-buffer-mb must be positive");
+                adc_max_buffer_mb = static_cast<uint64_t>(v);
             } else if (arg == "--adc-vref") {
                 std::string s = requireValue(i, argc, argv, arg);
                 size_t pos = 0;
                 adc_config.vref = std::stod(s, &pos);
                 if (pos != s.size() || adc_config.vref <= 0.0) throw std::runtime_error("--adc-vref must be a positive number");
+            } else if (arg == "--adc-realtime") {
+                adc_config.realtime = true;
+            } else if (arg == "--adc-rt-priority") {
+                int v = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                if (v < 1 || v > 99) throw std::runtime_error("--adc-rt-priority must be 1..99");
+                adc_config.realtime_priority = v;
+            } else if (arg == "--adc-cpu") {
+                int v = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                if (v < -1) throw std::runtime_error("--adc-cpu must be -1 or a non-negative CPU index");
+                adc_config.cpu_affinity = v;
             } else if (arg == "--spi-dev") {
                 adc_config.adc.device = requireValue(i, argc, argv, arg);
             } else if (arg == "--spi-speed") {
@@ -273,6 +300,19 @@ int main(int argc, char* argv[]) {
         std::cerr << "Argument error: " << e.what() << "\n\n";
         printUsage(argv[0], std::cerr);
         return 2;
+    }
+
+    if (adc_config.enabled && !adc_history_samples_explicit) {
+        const uint64_t requested = (static_cast<uint64_t>(adc_config.sample_rate_hz) * adc_history_ms + 999ull) / 1000ull;
+        const uint64_t max_bytes = adc_max_buffer_mb * 1024ull * 1024ull;
+        const uint64_t max_frames = std::max<uint64_t>(1, max_bytes / (sizeof(uint16_t) * 2ull));
+        adc_config.history_samples = static_cast<size_t>(std::max<uint64_t>(1, std::min<uint64_t>(requested, max_frames)));
+        if (requested > max_frames) {
+            std::cerr << "[ADC] Requested history " << adc_history_ms << " ms exceeds --adc-max-buffer-mb "
+                      << adc_max_buffer_mb << "; capped to "
+                      << ((adc_config.history_samples * 1000ull) / std::max<uint32_t>(1, adc_config.sample_rate_hz))
+                      << " ms." << std::endl;
+        }
     }
 
     std::map<int, std::shared_ptr<PinState>> registry;
@@ -344,7 +384,10 @@ int main(int argc, char* argv[]) {
                   << ", CS BCM " << adc_config.adc.cs_bcm
                   << ", CLK BCM " << adc_config.adc.clk_bcm
                   << ", MOSI BCM " << adc_config.adc.mosi_bcm
-                  << ", MISO BCM " << adc_config.adc.miso_bcm << std::endl;
+                  << ", MISO BCM " << adc_config.adc.miso_bcm
+                  << ", realtime " << (adc_config.realtime ? "on" : "off")
+                  << ", rt-priority " << adc_config.realtime_priority
+                  << ", adc-cpu " << adc_config.cpu_affinity << std::endl;
         std::cout << "Reserved ADC/SPI BCM pins hidden from GPIO control:";
         for (int bcm : reserved_gpio) std::cout << " " << bcm;
         std::cout << std::endl;

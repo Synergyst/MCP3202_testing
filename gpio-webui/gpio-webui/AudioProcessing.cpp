@@ -254,6 +254,54 @@ void effectBell202DualTone(AudioBuffer& b) {
     }
 }
 
+Biquad makeNotch(double sample_rate, double center_hz, double q) {
+    Biquad f;
+    if (sample_rate <= 0.0 || center_hz <= 0.0 || center_hz >= sample_rate * 0.45 || q <= 0.0) return f;
+    const double w0 = 2.0 * M_PI * center_hz / sample_rate;
+    const double alpha = std::sin(w0) / (2.0 * q);
+    const double cosw0 = std::cos(w0);
+    const double a0 = 1.0 + alpha;
+    f.b0 = 1.0 / a0;
+    f.b1 = (-2.0 * cosw0) / a0;
+    f.b2 = 1.0 / a0;
+    f.a1 = (-2.0 * cosw0) / a0;
+    f.a2 = (1.0 - alpha) / a0;
+    return f;
+}
+
+void effectHumNotch(AudioBuffer& b, double hz) {
+    if (b.samples.empty() || b.channels == 0 || b.sample_rate_hz == 0) return;
+    const uint16_t chs = b.channels;
+    std::vector<Biquad> filters(chs);
+    for (uint16_t ch = 0; ch < chs; ++ch) filters[ch] = makeNotch(static_cast<double>(b.sample_rate_hz), hz, 35.0);
+    for (size_t i = 0; i < b.samples.size(); ++i) {
+        const size_t ch = i % chs;
+        b.samples[i] = clamp16(static_cast<int32_t>(std::lrint(filters[ch].process(static_cast<double>(b.samples[i])))));
+    }
+}
+
+void effectVoiceAgc(AudioBuffer& b) {
+    if (b.samples.empty() || b.channels == 0 || b.sample_rate_hz == 0) return;
+    const uint16_t chs = b.channels;
+    const size_t frames = b.samples.size() / chs;
+    if (!frames) return;
+    const double target_rms = 9000.0;
+    const double max_gain = 8.0;
+    const double attack = 0.10;
+    const double release = 0.003;
+    std::vector<double> gain(chs, 1.0);
+    for (size_t i = 0; i < frames; ++i) {
+        for (uint16_t ch = 0; ch < chs; ++ch) {
+            double v = static_cast<double>(b.samples[i * chs + ch]);
+            double desired = target_rms / std::max(1000.0, std::abs(v));
+            desired = std::max(0.25, std::min(max_gain, desired));
+            const double coeff = desired < gain[ch] ? attack : release;
+            gain[ch] += coeff * (desired - gain[ch]);
+            b.samples[i * chs + ch] = clamp16(static_cast<int32_t>(std::lrint(v * gain[ch])));
+        }
+    }
+}
+
 void effectFskSquelch(AudioBuffer& b) {
     if (b.samples.empty() || b.channels == 0 || b.sample_rate_hz == 0) return;
     const uint16_t chs = b.channels;
@@ -324,6 +372,9 @@ nlohmann::json catalog() {
         {"effects", nlohmann::json::array({
             {{"id", "dc_block"}, {"label", "DC block / center"}, {"available", true}, {"description", "Removes per-channel DC offset from the exported buffer."}},
             {{"id", "pots_bandpass"}, {"label", "POTS voice band"}, {"available", true}, {"description", "Simple dependency-free 300 Hz high-pass plus ~3.4 kHz low-pass."}},
+            {{"id", "hum_notch_60"}, {"label", "60 Hz hum notch"}, {"available", true}, {"description", "Narrow notch to reduce mains hum."}},
+            {{"id", "hum_notch_120"}, {"label", "120 Hz hum notch"}, {"available", true}, {"description", "Narrow notch to reduce second-harmonic mains hum."}},
+            {{"id", "voice_agc"}, {"label", "Voice AGC"}, {"available", true}, {"description", "Simple automatic gain control for speech/listening previews."}},
             {{"id", "bell202_bandpass"}, {"label", "Bell 202 FSK band"}, {"available", true}, {"description", "FSK-focused broad bandpass around Caller ID/Bell 202 tones. Good first-stage cleanup."}},
             {{"id", "bell202_dual_tone"}, {"label", "Bell 202 dual-tone isolate"}, {"available", true}, {"description", "Narrowly isolates 1200 Hz and 2200 Hz and rejects in-band static/interference between the tones."}},
             {{"id", "fsk_squelch"}, {"label", "FSK static squelch"}, {"available", true}, {"description", "Soft-gates low-level line static using a short-window noise floor estimate. Best after Bell 202 bandpass."}},
@@ -357,7 +408,7 @@ AudioProcessOptions parseOptions(const std::string& effects_csv, const std::stri
     while (std::getline(ss, item, ',')) {
         item = lower(trim(item));
         if (item.empty() || item == "none") continue;
-        if (item != "dc_block" && item != "pots_bandpass" && item != "bell202_bandpass" && item != "bell202_dual_tone" && item != "fsk_squelch" && item != "normalize" && item != "soft_clip" && item != "rnnoise") {
+        if (item != "dc_block" && item != "pots_bandpass" && item != "hum_notch_60" && item != "hum_notch_120" && item != "voice_agc" && item != "bell202_bandpass" && item != "bell202_dual_tone" && item != "fsk_squelch" && item != "normalize" && item != "soft_clip" && item != "rnnoise") {
             throw std::runtime_error("Unknown or unavailable audio effect: " + item);
         }
 #ifndef HAVE_RNNOISE
@@ -380,6 +431,9 @@ void applyEffects(AudioBuffer& buffer, const AudioProcessOptions& options) {
     for (const auto& effect : options.effects) {
         if (effect == "dc_block") effectDcBlock(buffer);
         else if (effect == "pots_bandpass") effectPotsBandpass(buffer);
+        else if (effect == "hum_notch_60") effectHumNotch(buffer, 60.0);
+        else if (effect == "hum_notch_120") effectHumNotch(buffer, 120.0);
+        else if (effect == "voice_agc") effectVoiceAgc(buffer);
         else if (effect == "bell202_bandpass") effectBell202Bandpass(buffer);
         else if (effect == "bell202_dual_tone") effectBell202DualTone(buffer);
         else if (effect == "fsk_squelch") effectFskSquelch(buffer);
