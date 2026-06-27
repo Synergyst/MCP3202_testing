@@ -74,6 +74,7 @@ static volatile uint32_t rd_idx = 0;
 static volatile uint32_t next_seq = 0;
 static volatile uint32_t lost_frames = 0;
 static volatile uint32_t overflow_events = 0;
+static volatile uint32_t g_sample_rate = MCU_ADC_SAMPLE_RATE_HZ;
 
 static inline void cs_select(void) {
     gpio_put(MCU_ADC_PIN_CS, 0);
@@ -117,9 +118,10 @@ static void push_sample(uint16_t ch0, uint16_t ch1) {
 }
 
 static void sampler_core(void) {
-    const uint32_t period_us = 1000000u / MCU_ADC_SAMPLE_RATE_HZ;
     absolute_time_t next = get_absolute_time();
     while (true) {
+        uint32_t current_rate = g_sample_rate;
+        uint32_t period_us = 1000000u / (current_rate > 0 ? current_rate : 1);
         next = delayed_by_us(next, period_us);
         sleep_until(next);
         uint16_t ch0 = mcp3202_read_channel(0);
@@ -188,6 +190,26 @@ int main(void) {
     bool have_last = false;
 
     while (true) {
+        // Check for rate-change commands from host: 'S<rate>\\n'
+        int c = getchar_timeout_us(0);
+        if (c == 'S') {
+            char buf[16];
+            int pos = 0;
+            while (pos < 15) {
+                int b = getchar_timeout_us(1000);
+                if (b == '\\n' || b == '\r' || b == EOF) break;
+                if (b >= '0' && b <= '9') buf[pos++] = (char)b;
+                else break;
+            }
+            if (pos > 0) {
+                buf[pos] = '\\0';
+                uint32_t new_rate = (uint32_t)strtoul(buf, NULL, 10);
+                if (new_rate > 0 && new_rate <= 100000) {
+                    g_sample_rate = new_rate;
+                }
+            }
+        }
+
         uint32_t avail = ring_available();
         if (avail < MCU_ADC_PACKET_FRAMES) {
             sleep_ms(1);
@@ -208,7 +230,7 @@ int main(void) {
         hdr.magic = PROTO_MAGIC;
         hdr.version = PROTO_VERSION;
         hdr.header_bytes = sizeof(packet_header_t);
-        hdr.sample_rate_hz = MCU_ADC_SAMPLE_RATE_HZ;
+        hdr.sample_rate_hz = g_sample_rate;
         hdr.frame_count = n;
         hdr.sequence_start = packet_frames[0].seq;
         hdr.flags = flags;

@@ -85,6 +85,7 @@ public:
 
     void start();
     void stop();
+    void setSampleRate(uint32_t rate);
 
     bool isEnabled() const;
     void updateConfig(Config new_config);

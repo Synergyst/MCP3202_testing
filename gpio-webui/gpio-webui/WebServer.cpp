@@ -321,8 +321,8 @@ const char* HTML_UI = R"html(
     <div class="card scope-card" id="adcScopeCard">
         <div class="card-header">
             <div>
-                <span class="pin-title">MCP3202 Dual-Channel Historical Micro-Scope</span>
-                <span class="bcm-tag">CH0 + CH1, 12-bit @ 8 kHz frames</span>
+                <span id="adcTitle" class="pin-title">MCP3202 Dual-Channel Historical Micro-Scope</span>
+                <span id="adcTag" class="bcm-tag">CH0 + CH1, 12-bit @ 8 kHz frames</span>
             </div>
             <span class="status-pill status-bad" id="adcStatus">WAITING</span>
         </div>
@@ -671,10 +671,32 @@ const char* HTML_UI = R"html(
         }
 
         function updateAdcHeader(data) {
+            const sourceNames = {
+                'mcp3202-spidev': 'MCP3202 Dual-Channel Historical Micro-Scope',
+                'rp2040': 'RP2040 Dual-Channel Historical Micro-Scope'
+            };
+            const titleEl = document.getElementById('adcTitle');
+            if (titleEl) titleEl.textContent = sourceNames[data.adc_source] || 'ADC Dual-Channel Scope';
+
+            const tagEl = document.getElementById('adcTag');
+            if (tagEl) {
+                const res = (data.adc_source === 'rp2040' || data.adc_source === 'mcp3202-spidev') ? '12-bit' : 'unknown-bit';
+                const rateKhz = (data.measured_sample_rate_hz / 1000).toFixed(1);
+                const interfaceType = data.adc_source === 'rp2040' ? 'USB CDC' : 'SPI';
+                tagEl.textContent = `CH0 + CH1, ${res} @ ${rateKhz} kHz frames (${interfaceType})`;
+            }
+
             const status = document.getElementById('adcStatus');
             status.textContent = data.enabled ? (data.healthy ? 'ADC OK' : 'ADC FAULT') : 'ADC DISABLED';
             status.className = `status-pill ${data.healthy ? 'status-ok' : 'status-bad'}`;
-            document.getElementById('adcMode').textContent = data.bitbang ? 'bitbang GPIO' : 'hardware SPI';
+            
+            let modeText = 'Unknown';
+            if (data.adc_source === 'rp2040') {
+                modeText = 'RP2040 (USB)';
+            } else if (data.adc_source === 'mcp3202-spidev') {
+                modeText = data.bitbang ? 'bitbang GPIO' : 'hardware SPI';
+            }
+            document.getElementById('adcMode').textContent = modeText;
             const nominalRate = data.sample_rate_hz || 0;
             const measuredRate = data.measured_sample_rate_hz || nominalRate;
             document.getElementById('adcRate').textContent = nominalRate ? `${measuredRate} Hz actual (${nominalRate} Hz requested)` : '-';

@@ -143,6 +143,25 @@ void AdcSampler::stop() {
     if (adc_) adc_->close();
 }
 
+void AdcSampler::setSampleRate(uint32_t rate) {
+    if (config_.adc_source != \"rp2040\") return;
+    
+    // Open device in write-only mode to send command
+    int fd = ::open(config_.rp2040_dev.c_str(), O_WRONLY | O_NOCTTY | O_CLOEXEC);
+    if (fd < 0) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        last_error_ = \"Failed to open RP2040 for rate update: \" + std::string(std::strerror(errno));
+        return;
+    }
+    
+    std::string cmd = \"S\" + std::to_string(rate) + \"\\n\";
+    if (::write(fd, cmd.c_str(), cmd.size()) < 0) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        last_error_ = \"Failed to write rate command to RP2040: \" + std::string(std::strerror(errno));
+    }
+    ::close(fd);
+}
+
 void AdcSampler::start() {
     if (!config_.enabled || running_) return;
     running_ = true;
@@ -175,6 +194,9 @@ void AdcSampler::updateConfig(Config new_config) {
         rp2040_declared_rate_hz_ = 0;
     }
     start();
+    if (config_.adc_source == \"rp2040\") {
+        setSampleRate(config_.sample_rate_hz);
+    }
 }
 
 bool AdcSampler::isEnabled() const { return config_.enabled; }
