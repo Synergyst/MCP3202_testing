@@ -1,4 +1,14 @@
 {
+  "ch1817": {
+    "auto_answer_delay_ms": 0,
+    "auto_answer_enabled": false,
+    "enabled": true,
+    "offhook": false,
+    "offhook_bcm": 12,
+    "offhook_phys": 32,
+    "ri_bcm": 21,
+    "ri_phys": 40
+  },
   "pins": {
     "32": {
       "is_output": true,

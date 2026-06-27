@@ -137,6 +137,12 @@ AdcSampler::AdcSampler(Config config)
 
 AdcSampler::~AdcSampler() { stop(); }
 
+void AdcSampler::stop() {
+    running_ = false;
+    if (worker_.joinable()) worker_.join();
+    if (adc_) adc_->close();
+}
+
 void AdcSampler::start() {
     if (!config_.enabled || running_) return;
     running_ = true;
@@ -146,10 +152,29 @@ void AdcSampler::start() {
         worker_ = std::thread(&AdcSampler::workerSpidev, this);
 }
 
-void AdcSampler::stop() {
-    running_ = false;
-    if (worker_.joinable()) worker_.join();
-    if (adc_) adc_->close();
+void AdcSampler::updateConfig(Config new_config) {
+    stop();
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        config_ = std::move(new_config);
+        // Reset buffers for the new source
+        ring_[0].assign(std::max<size_t>(1, config_.history_samples), 0);
+        ring_[1].assign(std::max<size_t>(1, config_.history_samples), 0);
+        write_index_ = 0;
+        valid_samples_ = 0;
+        total_frames_ = 0;
+        dropped_reads_ = 0;
+        overruns_ = 0;
+        // Reset RP2040 stats
+        rp2040_connected_ = false;
+        rp2040_packets_ok_ = 0;
+        rp2040_packets_crc_bad_ = 0;
+        rp2040_sequence_gaps_ = 0;
+        rp2040_firmware_lost_frames_ = 0;
+        rp2040_firmware_flags_ = 0;
+        rp2040_declared_rate_hz_ = 0;
+    }
+    start();
 }
 
 bool AdcSampler::isEnabled() const { return config_.enabled; }

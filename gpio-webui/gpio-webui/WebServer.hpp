@@ -22,6 +22,7 @@ public:
               Ch1817Driver* ch1817_driver = nullptr,
               std::set<int> reserved_bcm_pins = {});
     void listen(const std::string& host, int port);
+    void update_adc_config(const std::string& source, const std::string& dev);
 
 private:
     void setup_routes();

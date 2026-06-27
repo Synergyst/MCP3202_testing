@@ -46,6 +46,8 @@ void printUsage(const char* argv0, std::ostream& os) {
        << "    --gpio-bcm 12,16,20,21\n"
        << "  If using spaces, quote the list or repeat shell-safe comma form.\n\n"
        << "ADC options:\n"
+       << "  --adc-source SOURCE               ADC source: 'mcp3202-spidev' (default) or 'rp2040'\n"
+       << "  --adc-rp2040-dev PATH             RP2040 USB device path (default /dev/ttyACM0)\n"
        << "  --adc-bitbang                      Use GPIO bit-banged SPI for MCP3202\n"
        << "  --adc-hw-spi                       Use Linux spidev hardware SPI (default)\n"
        << "  --adc-rate HZ                      ADC two-channel frame rate (default 8000)\n"
@@ -160,6 +162,10 @@ std::set<int> configuredAdcPins(const AdcSampler::Config& adc_config) {
     std::set<int> pins;
     if (!adc_config.enabled) return pins;
 
+    if (adc_config.adc_source == "rp2040") {
+        return pins; // USB source, no GPIO pins reserved
+    }
+
     // These are the configured SPI signal pins. In hardware-SPI mode the defaults
     // are the Pi SPI0 pins; in bitbang mode they are the custom wiring pins.
     pins.insert(adc_config.adc.clk_bcm);
@@ -216,6 +222,11 @@ int main(int argc, char* argv[]) {
     adc_config.adc.miso_bcm = 9;
     adc_config.adc.cs_bcm = 8; // default MCP3202 CS is Raspberry Pi SPI0 CE0: physical pin 24 / BCM8
 
+    // Load saved settings from config file before parsing CLI overrides
+    ConfigManager temp_cfg_mgr(context->config_path);
+    adc_config.adc_source = temp_cfg_mgr.getSetting("adc_source", "mcp3202-spidev");
+    adc_config.rp2040_dev = temp_cfg_mgr.getSetting("rp2040_dev", "/dev/ttyACM0");
+
     try {
         for (int i = 1; i < argc; ++i) {
             std::string arg = argv[i];
@@ -235,6 +246,14 @@ int main(int argc, char* argv[]) {
             } else if (arg == "--gpio-bcm") {
                 custom_bcm_list = true;
                 custom_bcm = parseIntList(requireValue(i, argc, argv, arg), arg);
+            } else if (arg == "--adc-rp2040-dev") {
+                adc_config.rp2040_dev = requireValue(i, argc, argv, arg);
+            } else if (arg == "--adc-source") {
+                std::string src = requireValue(i, argc, argv, arg);
+                if (src != "mcp3202-spidev" && src != "rp2040") {
+                    throw std::runtime_error("--adc-source must be 'mcp3202-spidev' or 'rp2040'");
+                }
+                adc_config.adc_source = src;
             } else if (arg == "--adc-channel") {
                 std::cerr << "[ARGS] --adc-channel is ignored now; both MCP3202 channels are sampled and graphed." << std::endl;
                 requireValue(i, argc, argv, arg);
@@ -371,23 +390,31 @@ int main(int argc, char* argv[]) {
     WebServer web_server(registry, config_mgr, gpio_mgr, context, adc_sampler.get(), caller_id_detector.get(), ch1817_driver.get(), reserved_gpio);
     
     std::cout << "=====================================================" << std::endl;
-    std::cout << "Starting Modular CM4 GPIO" << (adc_config.enabled ? " + MCP3202" : " Full-Control")
+    std::cout << "Starting Modular CM4 GPIO" << (adc_config.enabled ? " + ADC (" + adc_config.adc_source + ")" : " Full-Control")
               << " Server on " << listen_host << ":" << listen_port << "..." << std::endl;
     std::cout << "Config path: " << context->config_path << std::endl;
     if (adc_config.enabled) {
-        std::cout << "ADC/graph: enabled"
-                  << ", mode " << (adc_config.adc.bitbang ? "bitbang" : "hardware-spi")
-                  << ", device " << adc_config.adc.device
-                  << ", channels 0+1"
-                  << ", frame rate " << adc_config.sample_rate_hz << " Hz"
-                  << ", history " << adc_config.history_samples << " samples/channel"
-                  << ", CS BCM " << adc_config.adc.cs_bcm
-                  << ", CLK BCM " << adc_config.adc.clk_bcm
-                  << ", MOSI BCM " << adc_config.adc.mosi_bcm
-                  << ", MISO BCM " << adc_config.adc.miso_bcm
-                  << ", realtime " << (adc_config.realtime ? "on" : "off")
-                  << ", rt-priority " << adc_config.realtime_priority
-                  << ", adc-cpu " << adc_config.cpu_affinity << std::endl;
+        if (adc_config.adc_source == "rp2040") {
+            std::cout << "ADC/graph: enabled\n"
+                      << "  Source: RP2040 (USB CDC)\n"
+                      << "  Device: " << adc_config.rp2040_dev << "\n"
+                      << "  Frame rate: " << adc_config.sample_rate_hz << " Hz\n"
+                      << "  History: " << adc_config.history_samples << " samples/channel" << std::endl;
+        } else {
+            std::cout << "ADC/graph: enabled"
+                      << ", mode " << (adc_config.adc.bitbang ? "bitbang" : "hardware-spi")
+                      << ", device " << adc_config.adc.device
+                      << ", channels 0+1"
+                      << ", frame rate " << adc_config.sample_rate_hz << " Hz"
+                      << ", history " << adc_config.history_samples << " samples/channel"
+                      << ", CS BCM " << adc_config.adc.cs_bcm
+                      << ", CLK BCM " << adc_config.adc.clk_bcm
+                      << ", MOSI BCM " << adc_config.adc.mosi_bcm
+                      << ", MISO BCM " << adc_config.adc.miso_bcm
+                      << ", realtime " << (adc_config.realtime ? "on" : "off")
+                      << ", rt-priority " << adc_config.realtime_priority
+                      << ", adc-cpu " << adc_config.cpu_affinity << std::endl;
+        }
         std::cout << "Reserved ADC/SPI BCM pins hidden from GPIO control:";
         for (int bcm : reserved_gpio) std::cout << " " << bcm;
         std::cout << std::endl;

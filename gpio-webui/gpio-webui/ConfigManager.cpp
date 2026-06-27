@@ -66,3 +66,31 @@ void ConfigManager::save(const std::map<int, std::shared_ptr<PinState>>& registr
         std::cerr << "[CONFIG] Failed to save config file!" << std::endl;
     }
 }
+
+std::string ConfigManager::getSetting(const std::string& key, const std::string& defaultValue) {
+    std::ifstream f(config_path);
+    if (!f.is_open()) return defaultValue;
+    try {
+        json j;
+        f >> j;
+        return j.value(key, defaultValue);
+    } catch (...) {
+        return defaultValue;
+    }
+}
+
+void ConfigManager::setSetting(const std::string& key, const std::string& value) {
+    json j;
+    {
+        std::ifstream existing(config_path);
+        if (existing.is_open()) {
+            try { existing >> j; } catch (...) { j = json::object(); }
+        }
+    }
+    if (!j.is_object()) j = json::object();
+    j[key] = value;
+    std::ofstream f(config_path);
+    if (f.is_open()) {
+        f << j.dump(2);
+    }
+}

@@ -980,6 +980,50 @@ void WebServer::setup_routes() {
         res.set_content(json{{"fsk_source", src}}.dump(), "application/json");
     });
 
+    svr.Post("/api/adc/config", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!adc_sampler) {
+            res.status = 404;
+            res.set_content("{\"error\":\"ADC sampler not configured\"}", "application/json");
+            return;
+        }
+        try {
+            json j = json::parse(req.body.empty() ? "{}" : req.body);
+            
+            AdcSampler::Config cfg; 
+            cfg.adc_source = j.value("adc_source", "mcp3202-spidev");
+            cfg.rp2040_dev = j.value("rp2040_dev", "/dev/ttyACM0");
+            
+            adc_sampler->updateConfig(cfg);
+            
+            // Update GPIO reservations based on the new source
+            std::set<int> new_reserved;
+            if (cfg.adc_source == "mcp3202-spidev") {
+                // Use defaults for SPI pins as per main.cpp logic
+                new_reserved.insert(11); // CLK
+                new_reserved.insert(10); // MOSI
+                new_reserved.insert(9);  // MISO
+                new_reserved.insert(8);   // CS
+            }
+            
+            // Merge with telephony pins
+            if (ch1817_driver && ch1817_driver->settings().enabled) {
+                new_reserved.insert(ch1817_driver->offhookBcm());
+                new_reserved.insert(ch1817_driver->riBcm());
+            }
+            
+            reserved_bcm_pins = std::move(new_reserved);
+            
+            // Persist to config.json
+            config_mgr.setSetting("adc_source", cfg.adc_source);
+            config_mgr.setSetting("rp2040_dev", cfg.rp2040_dev);
+            
+            res.set_content("{\"status\":\"ok\"}", "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"status", "error"}, {"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
     svr.Post("/api/system/settings", [this](const httplib::Request& req, httplib::Response& res) {
         try {
             json body = json::parse(req.body.empty() ? "{}" : req.body);
@@ -1206,6 +1250,15 @@ std::string WebServer::serialize_adc_scope(size_t max_points, const std::string&
     j["cpu_affinity"] = s.cpu_affinity;
     j["scheduler_status"] = s.scheduler_status;
     j["valid_samples"] = s.valid_samples;
+    j["adc_source"] = s.adc_source;
+    j["rp2040_connected"] = s.rp2040_connected;
+    j["rp2040_packets_ok"] = s.rp2040_packets_ok;
+    j["rp2040_packets_crc_bad"] = s.rp2040_packets_crc_bad;
+    j["rp2040_sequence_gaps"] = s.rp2040_sequence_gaps;
+    j["rp2040_firmware_lost_frames"] = s.rp2040_firmware_lost_frames;
+    j["rp2040_firmware_flags"] = s.rp2040_firmware_flags;
+    j["rp2040_dev"] = s.rp2040_dev;
+    j["rp2040_declared_rate_hz"] = s.rp2040_declared_rate_hz;
     j["history_capacity_samples"] = s.history_capacity_samples;
     j["available_history_ms"] = (static_cast<uint64_t>(s.valid_samples) * 1000ull) / std::max<uint32_t>(1, sr);
     j["history_capacity_ms"] = (static_cast<uint64_t>(s.history_capacity_samples) * 1000ull) / std::max<uint32_t>(1, sr);

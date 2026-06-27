@@ -87,6 +87,7 @@ public:
     void stop();
 
     bool isEnabled() const;
+    void updateConfig(Config new_config);
     AdcScopeData status() const;
     AdcScopeData snapshot(size_t max_points = 1600) const;
     AdcScopeData recent(size_t frames) const;
