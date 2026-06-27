@@ -88,6 +88,7 @@ public:
     void setSampleRate(uint32_t rate);
 
     bool isEnabled() const;
+    Config config() const;
     void updateConfig(Config new_config);
     AdcScopeData status() const;
     AdcScopeData snapshot(size_t max_points = 1600) const;
@@ -98,6 +99,7 @@ private:
     void workerSpidev();
     // RP2040 USB CDC reader loop
     void workerRp2040();
+    bool sendRp2040RateCommandLocked(int fd, uint32_t rate, std::string& error);
 
     void configureWorkerScheduling();
     void fillStatusLocked(AdcScopeData& data) const;
@@ -147,6 +149,8 @@ private:
     uint32_t rp2040_declared_rate_hz_ = 0;
     bool rp2040_have_last_seq_ = false;
     uint32_t rp2040_last_seq_ = 0;
+    int rp2040_fd_ = -1;
+    uint32_t rp2040_pending_rate_hz_ = 0;
 
     std::atomic<bool> running_{false};
     std::thread worker_;

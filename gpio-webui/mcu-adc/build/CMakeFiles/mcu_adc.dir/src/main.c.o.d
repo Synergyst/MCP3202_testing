@@ -20,6 +20,8 @@ CMakeFiles/mcu_adc.dir/src/main.c.o: \
  /usr/lib/gcc/arm-none-eabi/12.2.1/include/stdbool.h \
  /usr/include/newlib/string.h /usr/include/newlib/sys/_locale.h \
  /usr/include/newlib/strings.h /usr/include/newlib/sys/string.h \
+ /usr/include/newlib/stdlib.h /usr/include/newlib/machine/stdlib.h \
+ /usr/include/newlib/alloca.h \
  /root/pico/pico-sdk/src/common/pico_stdlib_headers/include/pico/stdlib.h \
  /root/pico/pico-sdk/src/common/pico_base_headers/include/pico.h \
  /root/pico/pico-sdk/src/common/pico_base_headers/include/pico/types.h \

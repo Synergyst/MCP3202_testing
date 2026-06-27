@@ -57,6 +57,20 @@ std::string lowerCopy(std::string s) {
     return s;
 }
 
+std::set<int> adcReservedPinsForConfig(const AdcSampler::Config& cfg) {
+    std::set<int> pins;
+    if (!cfg.enabled || cfg.adc_source == "rp2040") return pins;
+    pins.insert(cfg.adc.clk_bcm);
+    pins.insert(cfg.adc.mosi_bcm);
+    pins.insert(cfg.adc.miso_bcm);
+    if (cfg.adc.cs_bcm >= 0) pins.insert(cfg.adc.cs_bcm);
+    if (!cfg.adc.bitbang) {
+        if (cfg.adc.device.find("spidev0.1") != std::string::npos) pins.insert(7);
+        else if (cfg.adc.device.find("spidev0.0") != std::string::npos) pins.insert(8);
+    }
+    return pins;
+}
+
 std::vector<std::string> splitEffectsCsv(const std::string& csv) {
     std::vector<std::string> out;
     std::stringstream ss(csv);
@@ -236,7 +250,7 @@ const char* HTML_UI = R"html(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CM4 GPIO + MCP3202 Monitor</title>
+    <title>CM4 GPIO + ADC Monitor</title>
     <style>
         body { background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
         h1 { color: #ffffff; margin-bottom: 5px; }
@@ -269,6 +283,12 @@ const char* HTML_UI = R"html(
         .effect-item input { width: auto; }
         .record-help { color: #9aa; font-size: .82rem; }
         .record-status { color: #8df7ff; font-size: .85rem; min-width: 160px; }
+        .adc-config-panel input.wide { width: 360px; max-width: 80vw; text-align: left; }
+        .adc-diag { margin-top: 10px; padding: 9px 11px; border-radius: 7px; background: #101719; border: 1px solid #263238; color: #b9d7dc; font-size: .86rem; line-height: 1.45; }
+        .adc-diag.ok { border-color: rgba(0,255,135,.55); color: #d6fff0; }
+        .adc-diag.warn { border-color: #f0a500; color: #ffe4a8; }
+        .adc-diag.bad { border-color: #ff4141; color: #ffb7b7; }
+        .rate-warn { color: #ffcf33; font-weight: bold; }
         button.action-btn.active-high { background: #00ff87; color: #000; font-weight: bold; }
         button.action-btn.active-low { background: #ff4141; color: #fff; font-weight: bold; }
         .io-badge { padding: 4px 8px; border-radius: 5px; font-size: 0.8rem; font-weight: bold; }
@@ -302,8 +322,8 @@ const char* HTML_UI = R"html(
     </style>
 </head>
 <body class="__BODY_CLASS__">
-    <h1>CM4 GPIO + MCP3202 Monitor Dashboard</h1>
-    <div class="subtitle">Real-time physical header tracking, register control, and 8 kHz ADC audio scope</div>
+    <h1>CM4 GPIO + ADC Monitor Dashboard</h1>
+    <div class="subtitle">Real-time physical header tracking, telephony control, and dual-channel ADC scope</div>
     <div class="config-panel">
         <label for="timeoutInput">Steady-State Timeout (ms):</label>
         <input type="number" id="timeoutInput" value="5000" oninput="lockTimeoutInput()" onfocus="lockTimeoutInput()">
@@ -321,7 +341,7 @@ const char* HTML_UI = R"html(
     <div class="card scope-card" id="adcScopeCard">
         <div class="card-header">
             <div>
-                <span id="adcTitle" class="pin-title">MCP3202 Dual-Channel Historical Micro-Scope</span>
+                <span id="adcTitle" class="pin-title">Dual-Channel ADC Scope</span>
                 <span id="adcTag" class="bcm-tag">CH0 + CH1, 12-bit @ 8 kHz frames</span>
             </div>
             <span class="status-pill status-bad" id="adcStatus">WAITING</span>
@@ -329,12 +349,32 @@ const char* HTML_UI = R"html(
         <div class="scope-top">
             <span>Mode: <b id="adcMode">-</b></span>
             <span>Frame Rate: <b id="adcRate">-</b></span>
+            <span id="adcRateWarn" class="rate-warn"></span>
             <span style="color:#00ff87">CH0: <b id="adcLatest0">-</b></span>
             <span style="color:#ffcf33">CH1: <b id="adcLatest1">-</b></span>
             <span>Frames: <b id="adcSamples">-</b></span>
             <span>Dropped: <b id="adcDropped">-</b></span>
             <span>History: <b id="adcHistory">-</b></span>
             <span id="adcErr" style="color:#ff8a80"></span>
+        </div>
+        <div class="adc-diag" id="adcDiagnostics">ADC diagnostics will appear here.</div>
+        <div class="config-panel record-panel adc-config-panel">
+            <label>ADC source:
+                <select id="adcConfigSource">
+                    <option value="rp2040">RP2040 USB CDC</option>
+                    <option value="mcp3202-spidev">MCP3202 Linux SPI</option>
+                </select>
+            </label>
+            <label>RP2040 device:
+                <input class="wide" type="text" id="adcConfigRp2040Dev" value="/dev/ttyACM0">
+            </label>
+            <label>Sample rate:
+                <input type="number" id="adcConfigRate" min="1" max="100000" step="1000" list="adcRatePresets" value="16000">
+                <datalist id="adcRatePresets"><option value="8000"><option value="16000"><option value="24000"></datalist>
+            </label>
+            <button onclick="applyAdcSettings()">Apply ADC Settings</button>
+            <span class="record-status" id="adcConfigStatus"></span>
+            <span class="record-help">Recommended RP2040 rate: 16000 Hz. Tested practical max: 24000 Hz; higher requested rates may not be achieved.</span>
         </div>
         <div class="scope-wrap"><canvas id="adcScope" width="1200" height="220"></canvas></div>
         <div class="config-panel record-panel">
@@ -660,7 +700,9 @@ const char* HTML_UI = R"html(
                 const effects = selectedEffectsCsv();
                 const res = await fetch(`/api/adc?points=${pointBudget}&view=${encodeURIComponent(view)}&effects=${encodeURIComponent(effects)}`);
                 const data = await res.json();
+                window.lastAdcData = data;
                 updateAdcHeader(data);
+                fillAdcSettings(data);
                 drawScope(data);
             } catch (err) {
                 const status = document.getElementById('adcStatus');
@@ -670,10 +712,69 @@ const char* HTML_UI = R"html(
             }
         }
 
+        let adcConfigDirty = false;
+        function markAdcConfigDirty() { adcConfigDirty = true; const s = document.getElementById('adcConfigStatus'); if (s) s.textContent = 'Unsaved ADC changes'; }
+        function adcConfigFocused() { return ['adcConfigSource','adcConfigRp2040Dev','adcConfigRate'].includes(document.activeElement && document.activeElement.id); }
+        function fillAdcSettings(data, force=false) {
+            if (!data || (!force && (adcConfigDirty || adcConfigFocused()))) return;
+            const src = document.getElementById('adcConfigSource');
+            const dev = document.getElementById('adcConfigRp2040Dev');
+            const rate = document.getElementById('adcConfigRate');
+            if (src) src.value = data.adc_source || 'rp2040';
+            if (dev) dev.value = data.rp2040_dev || '/dev/ttyACM0';
+            if (rate) rate.value = data.sample_rate_hz || 16000;
+            adcConfigDirty = false;
+        }
+        function wireAdcConfigDirty() {
+            ['adcConfigSource','adcConfigRp2040Dev','adcConfigRate'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) { el.addEventListener('input', markAdcConfigDirty); el.addEventListener('change', markAdcConfigDirty); }
+            });
+        }
+        async function applyAdcSettings() {
+            const status = document.getElementById('adcConfigStatus');
+            const body = {
+                adc_source: document.getElementById('adcConfigSource').value,
+                rp2040_dev: document.getElementById('adcConfigRp2040Dev').value.trim() || '/dev/ttyACM0',
+                sample_rate_hz: Math.max(1, Math.min(100000, parseInt(document.getElementById('adcConfigRate').value || '16000', 10)))
+            };
+            document.getElementById('adcConfigRate').value = body.sample_rate_hz;
+            status.textContent = 'Applying ADC settings...';
+            try {
+                const res = await fetch('/api/adc/config', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+                status.textContent = `Applied ${data.adc_source || body.adc_source} @ ${data.sample_rate_hz || body.sample_rate_hz} Hz`;
+                adcConfigDirty = false;
+                setTimeout(fetchAdcScope, 700);
+            } catch (err) {
+                status.textContent = `ADC apply failed: ${err.message || err}`;
+            }
+        }
+
+        function formatHexFlags(v) { return '0x' + ((v || 0) >>> 0).toString(16).padStart(8, '0'); }
+        function updateAdcDiagnostics(data) {
+            const el = document.getElementById('adcDiagnostics');
+            if (!el) return;
+            if (data.adc_source === 'rp2040') {
+                const crc = data.rp2040_packets_crc_bad || 0;
+                const gaps = data.rp2040_sequence_gaps || 0;
+                const lost = data.rp2040_firmware_lost_frames || 0;
+                const flags = data.rp2040_firmware_flags || 0;
+                const ok = data.healthy && data.rp2040_connected && crc === 0 && gaps === 0 && lost === 0 && flags === 0;
+                const warn = data.rp2040_connected && !ok;
+                el.className = `adc-diag ${ok ? 'ok' : (warn ? 'warn' : 'bad')}`;
+                el.textContent = `RP2040: ${data.rp2040_connected ? 'connected' : 'disconnected'} | device ${data.rp2040_dev || '-'} | packets ${data.rp2040_packets_ok || 0} | crc ${crc} | gaps ${gaps} | fw lost ${lost} | flags ${formatHexFlags(flags)} | firmware ${data.rp2040_declared_rate_hz || 0} Hz`;
+            } else {
+                el.className = `adc-diag ${data.healthy ? 'ok' : 'bad'}`;
+                el.textContent = `MCP3202/Linux SPI: ${data.healthy ? 'streaming' : 'not healthy'} | scheduler ${data.scheduler_status || 'normal'} | overruns ${data.overruns || 0} | max overrun ${data.max_overrun_us || 0} us`;
+            }
+        }
+
         function updateAdcHeader(data) {
             const sourceNames = {
-                'mcp3202-spidev': 'MCP3202 Dual-Channel Historical Micro-Scope',
-                'rp2040': 'RP2040 Dual-Channel Historical Micro-Scope'
+                'mcp3202-spidev': 'MCP3202 Dual-Channel ADC Scope',
+                'rp2040': 'RP2040 USB Dual-Channel ADC Scope'
             };
             const titleEl = document.getElementById('adcTitle');
             if (titleEl) titleEl.textContent = sourceNames[data.adc_source] || 'ADC Dual-Channel Scope';
@@ -699,7 +800,11 @@ const char* HTML_UI = R"html(
             document.getElementById('adcMode').textContent = modeText;
             const nominalRate = data.sample_rate_hz || 0;
             const measuredRate = data.measured_sample_rate_hz || nominalRate;
-            document.getElementById('adcRate').textContent = nominalRate ? `${measuredRate} Hz actual (${nominalRate} Hz requested)` : '-';
+            const firmwareRate = data.rp2040_declared_rate_hz || 0;
+            document.getElementById('adcRate').textContent = nominalRate ? (data.adc_source === 'rp2040' ? `${measuredRate} Hz measured | ${nominalRate} Hz requested | ${firmwareRate || '-'} Hz firmware` : `${measuredRate} Hz measured | ${nominalRate} Hz requested`) : '-';
+            const mismatch = nominalRate && measuredRate && Math.abs(measuredRate - nominalRate) / nominalRate > 0.05;
+            const warnEl = document.getElementById('adcRateWarn');
+            if (warnEl) warnEl.textContent = mismatch ? 'Measured rate differs from requested; use 16000 or 24000 Hz for tested RP2040 operation.' : '';
             const raw = data.latest_raw || [0, 0];
             const volts = data.latest_volts || [0, 0];
             document.getElementById('adcLatest0').textContent = `${raw[0] ?? 0} (${(volts[0] ?? 0).toFixed(3)} V)`;
@@ -710,6 +815,7 @@ const char* HTML_UI = R"html(
             const capMs = data.history_capacity_ms || 0;
             document.getElementById('adcHistory').textContent = capMs ? `${(availMs/1000).toFixed(1)}s / ${(capMs/1000).toFixed(1)}s` : '-';
             document.getElementById('adcErr').textContent = data.last_error || '';
+            updateAdcDiagnostics(data);
         }
 
         function drawScope(data) {
@@ -744,7 +850,7 @@ const char* HTML_UI = R"html(
 
             if (!samples0.length && !samples1.length && !filt0.length && !filt1.length) {
                 ctx.fillStyle = '#777';
-                ctx.fillText('Waiting for MCP3202 samples...', 14, 24);
+                ctx.fillText('Waiting for ADC samples...', 14, 24);
                 return;
             }
 
@@ -899,7 +1005,8 @@ const char* HTML_UI = R"html(
                 const truncated = (res.headers.get('X-Wav-Truncated') || 'false') === 'true';
                 const cd = res.headers.get('Content-Disposition') || '';
                 const m = cd.match(/filename="?([^";]+)"?/i);
-                const filename = m ? m[1] : `mcp3202_${mode}_${ms}ms.wav`;
+                const sourcePrefix = (window.lastAdcData && window.lastAdcData.adc_source === 'rp2040') ? 'rp2040' : ((window.lastAdcData && window.lastAdcData.adc_source === 'mcp3202-spidev') ? 'mcp3202' : 'adc');
+                const filename = m ? m[1] : `${sourcePrefix}_${mode}_${ms}ms.wav`;
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
@@ -965,7 +1072,7 @@ const char* HTML_UI = R"html(
         setInterval(fetchStatus, 250);
         if (ADC_ENABLED) { setInterval(fetchAdcScope, 120); setInterval(fetchCallerId, 1000); }
         setInterval(fetchTelephony, 500);
-        window.onload = () => { restoreSimpleUiPrefs(); selectTab(loadUiPref('activeTab', 'scope')); fetchStatus(); wireCallerIdTuneDirty(); if (ADC_ENABLED) { loadAudioModules().then(() => fetchAdcScope()); fetchCallerId(); } fetchTelephony(); };
+        window.onload = () => { restoreSimpleUiPrefs(); selectTab(loadUiPref('activeTab', 'scope')); fetchStatus(); wireCallerIdTuneDirty(); wireAdcConfigDirty(); if (ADC_ENABLED) { loadAudioModules().then(() => fetchAdcScope()); fetchCallerId(); } fetchTelephony(); };
     </script>
 </body>
 </html>
@@ -1010,36 +1117,43 @@ void WebServer::setup_routes() {
         }
         try {
             json j = json::parse(req.body.empty() ? "{}" : req.body);
-            
-            AdcSampler::Config cfg; 
-            cfg.adc_source = j.value("adc_source", "mcp3202-spidev");
-            cfg.rp2040_dev = j.value("rp2040_dev", "/dev/ttyACM0");
-            
-            adc_sampler->updateConfig(cfg);
-            
-            // Update GPIO reservations based on the new source
-            std::set<int> new_reserved;
-            if (cfg.adc_source == "mcp3202-spidev") {
-                // Use defaults for SPI pins as per main.cpp logic
-                new_reserved.insert(11); // CLK
-                new_reserved.insert(10); // MOSI
-                new_reserved.insert(9);  // MISO
-                new_reserved.insert(8);   // CS
+
+            AdcSampler::Config cfg = adc_sampler->config();
+            cfg.adc_source = j.value("adc_source", cfg.adc_source);
+            cfg.rp2040_dev = j.value("rp2040_dev", cfg.rp2040_dev);
+            cfg.enabled = j.value("enabled", cfg.enabled);
+            if (j.contains("sample_rate_hz")) cfg.sample_rate_hz = j.at("sample_rate_hz").get<uint32_t>();
+            if (j.contains("sample_rate")) cfg.sample_rate_hz = j.at("sample_rate").get<uint32_t>();
+            if (j.contains("history_samples")) cfg.history_samples = j.at("history_samples").get<size_t>();
+            if (j.contains("vref")) cfg.vref = j.at("vref").get<double>();
+
+            if (cfg.adc_source != "mcp3202-spidev" && cfg.adc_source != "rp2040") {
+                throw std::runtime_error("adc_source must be 'mcp3202-spidev' or 'rp2040'");
             }
-            
-            // Merge with telephony pins
+            if (cfg.sample_rate_hz == 0 || cfg.sample_rate_hz > 100000) {
+                throw std::runtime_error("sample_rate_hz must be in range 1..100000");
+            }
+            if (cfg.history_samples == 0) {
+                throw std::runtime_error("history_samples must be positive");
+            }
+            if (cfg.vref <= 0.0) {
+                throw std::runtime_error("vref must be positive");
+            }
+
+            adc_sampler->updateConfig(cfg);
+
+            std::set<int> new_reserved = adcReservedPinsForConfig(cfg);
             if (ch1817_driver && ch1817_driver->settings().enabled) {
                 new_reserved.insert(ch1817_driver->offhookBcm());
                 new_reserved.insert(ch1817_driver->riBcm());
             }
-            
             reserved_bcm_pins = std::move(new_reserved);
-            
-            // Persist to config.json
+
             config_mgr.setSetting("adc_source", cfg.adc_source);
             config_mgr.setSetting("rp2040_dev", cfg.rp2040_dev);
-            
-            res.set_content("{\"status\":\"ok\"}", "application/json");
+            config_mgr.setSetting("adc_sample_rate_hz", std::to_string(cfg.sample_rate_hz));
+
+            res.set_content(json{{"status", "ok"}, {"adc_source", cfg.adc_source}, {"rp2040_dev", cfg.rp2040_dev}, {"sample_rate_hz", cfg.sample_rate_hz}}.dump(), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json{{"status", "error"}, {"error", e.what()}}.dump(), "application/json");
@@ -1370,7 +1484,10 @@ std::string WebServer::build_adc_wav(const std::string& mode, size_t duration_ms
     std::string payload = AudioProcessing::encodeWav(buffer, options);
 
     std::string effects_part = options.effects.empty() ? "dry" : AudioProcessing::sanitizeForFilename(effects_csv);
-    filename = "mcp3202_" + safe_mode + "_" + effects_part + "_" + std::to_string(actual_ms) + "ms_" + std::to_string(sample_rate) + "hz.wav";
+    std::string source_prefix = "adc";
+    if (meta.adc_source == "rp2040") source_prefix = "rp2040";
+    else if (meta.adc_source == "mcp3202-spidev") source_prefix = "mcp3202";
+    filename = source_prefix + "_" + safe_mode + "_" + effects_part + "_" + std::to_string(actual_ms) + "ms_" + std::to_string(sample_rate) + "hz.wav";
     content_type = "audio/wav";
     return payload;
 }

@@ -3907,6 +3907,9 @@ CMakeFiles/mcu_adc.dir/src/main.c.o: /root/mcp-adc/gpio-webui/mcu-adc/src/main.c
   /usr/include/newlib/sys/_locale.h \
   /usr/include/newlib/strings.h \
   /usr/include/newlib/sys/string.h \
+  /usr/include/newlib/stdlib.h \
+  /usr/include/newlib/machine/stdlib.h \
+  /usr/include/newlib/alloca.h \
   /root/pico/pico-sdk/src/common/pico_stdlib_headers/include/pico/stdlib.h \
   /root/pico/pico-sdk/src/common/pico_base_headers/include/pico.h \
   /root/pico/pico-sdk/src/common/pico_base_headers/include/pico/types.h \

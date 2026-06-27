@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "pico/stdlib.h"
 #include "pico/stdio.h"
@@ -158,8 +159,6 @@ static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t len) {
 static void write_all(const void *data, size_t len) {
     const uint8_t *p = (const uint8_t *)data;
     while (len) {
-        int c = getchar_timeout_us(0);
-        (void)c; // keep USB stdio serviced on some SDK versions
         size_t chunk = len > 64 ? 64 : len;
         fwrite(p, 1, chunk, stdout);
         p += chunk;
@@ -197,12 +196,12 @@ int main(void) {
             int pos = 0;
             while (pos < 15) {
                 int b = getchar_timeout_us(1000);
-                if (b == '\\n' || b == '\r' || b == EOF) break;
+                if (b == '\n' || b == '\r' || b == EOF) break;
                 if (b >= '0' && b <= '9') buf[pos++] = (char)b;
                 else break;
             }
             if (pos > 0) {
-                buf[pos] = '\\0';
+                buf[pos] = '\0';
                 uint32_t new_rate = (uint32_t)strtoul(buf, NULL, 10);
                 if (new_rate > 0 && new_rate <= 100000) {
                     g_sample_rate = new_rate;

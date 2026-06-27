@@ -143,23 +143,45 @@ void AdcSampler::stop() {
     if (adc_) adc_->close();
 }
 
-void AdcSampler::setSampleRate(uint32_t rate) {
-    if (config_.adc_source != \"rp2040\") return;
-    
-    // Open device in write-only mode to send command
-    int fd = ::open(config_.rp2040_dev.c_str(), O_WRONLY | O_NOCTTY | O_CLOEXEC);
+bool AdcSampler::sendRp2040RateCommandLocked(int fd, uint32_t rate, std::string& error) {
     if (fd < 0) {
+        error = "RP2040 rate update deferred: device is not connected";
+        return false;
+    }
+    const std::string cmd = "S" + std::to_string(rate) + "\n";
+    size_t sent = 0;
+    while (sent < cmd.size()) {
+        ssize_t rc = ::write(fd, cmd.data() + sent, cmd.size() - sent);
+        if (rc > 0) {
+            sent += static_cast<size_t>(rc);
+            continue;
+        }
+        if (rc < 0 && errno == EINTR) continue;
+        error = "Failed to write rate command to RP2040: " + std::string(std::strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+void AdcSampler::setSampleRate(uint32_t rate) {
+    if (rate == 0 || rate > 100000) {
         std::lock_guard<std::mutex> lock(mtx_);
-        last_error_ = \"Failed to open RP2040 for rate update: \" + std::string(std::strerror(errno));
+        last_error_ = "Invalid RP2040 sample rate " + std::to_string(rate) + " Hz; valid range is 1..100000";
         return;
     }
-    
-    std::string cmd = \"S\" + std::to_string(rate) + \"\\n\";
-    if (::write(fd, cmd.c_str(), cmd.size()) < 0) {
-        std::lock_guard<std::mutex> lock(mtx_);
-        last_error_ = \"Failed to write rate command to RP2040: \" + std::string(std::strerror(errno));
+
+    std::lock_guard<std::mutex> lock(mtx_);
+    config_.sample_rate_hz = rate;
+    if (config_.adc_source != "rp2040") return;
+
+    rp2040_pending_rate_hz_ = rate;
+    std::string error;
+    if (sendRp2040RateCommandLocked(rp2040_fd_, rate, error)) {
+        rp2040_pending_rate_hz_ = 0;
+        if (!last_error_.empty() && last_error_.find("rate") != std::string::npos) last_error_.clear();
+    } else {
+        last_error_ = error;
     }
-    ::close(fd);
 }
 
 void AdcSampler::start() {
@@ -192,14 +214,23 @@ void AdcSampler::updateConfig(Config new_config) {
         rp2040_firmware_lost_frames_ = 0;
         rp2040_firmware_flags_ = 0;
         rp2040_declared_rate_hz_ = 0;
+        rp2040_have_last_seq_ = false;
+        rp2040_last_seq_ = 0;
+        rp2040_fd_ = -1;
+        rp2040_pending_rate_hz_ = (config_.adc_source == "rp2040") ? config_.sample_rate_hz : 0;
     }
     start();
-    if (config_.adc_source == \"rp2040\") {
+    if (config_.adc_source == "rp2040") {
         setSampleRate(config_.sample_rate_hz);
     }
 }
 
 bool AdcSampler::isEnabled() const { return config_.enabled; }
+
+AdcSampler::Config AdcSampler::config() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return config_;
+}
 
 uint64_t AdcSampler::ema(uint64_t old_value, uint64_t sample, uint32_t weight) {
     if (old_value == 0) return sample;
@@ -365,35 +396,59 @@ void AdcSampler::workerSpidev() {
 void AdcSampler::workerRp2040() {
     const std::string device = config_.rp2040_dev;
 
-    auto set_error = [&](const std::string& msg) {
+    auto set_error = [&](const std::string& msg, bool connected = false) {
         std::lock_guard<std::mutex> lock(mtx_);
-        healthy_             = false;
-        rp2040_connected_    = false;
-        last_error_          = msg;
+        healthy_          = false;
+        rp2040_connected_ = connected;
+        last_error_       = msg;
+    };
+
+    auto reconnect_with_error = [&](int fd, const std::string& msg) {
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            healthy_          = false;
+            rp2040_connected_ = false;
+            if (rp2040_fd_ == fd) rp2040_fd_ = -1;
+            if (!msg.empty()) last_error_ = msg;
+        }
+        ::close(fd);
     };
 
     while (running_) {
-        // Open the serial port
-        int fd = ::open(device.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC);
+        int fd = ::open(device.c_str(), O_RDWR | O_NOCTTY | O_CLOEXEC | O_NONBLOCK);
         if (fd < 0) {
             set_error(std::string("open ") + device + ": " + std::strerror(errno));
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             continue;
         }
-        configureTtyRaw(fd);
-        {
-            std::lock_guard<std::mutex> lock(mtx_);
-            rp2040_connected_ = true;
-            healthy_          = false; // will become true once we receive valid data
-            last_error_.clear();
+
+        if (!configureTtyRaw(fd)) {
+            reconnect_with_error(fd, std::string("configure raw TTY ") + device + ": " + std::strerror(errno));
+            if (running_) std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            continue;
         }
 
-        // Sliding 4-byte window for magic sync
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            rp2040_fd_        = fd;
+            rp2040_connected_ = true;
+            healthy_          = false; // true after first valid packet
+            last_error_.clear();
+            if (rp2040_pending_rate_hz_ == 0) rp2040_pending_rate_hz_ = config_.sample_rate_hz;
+            std::string error;
+            if (rp2040_pending_rate_hz_ != 0 && sendRp2040RateCommandLocked(fd, rp2040_pending_rate_hz_, error)) {
+                rp2040_pending_rate_hz_ = 0;
+            } else if (!error.empty()) {
+                last_error_ = error;
+            }
+        }
+
+        std::string reconnect_reason;
         std::array<uint8_t, 4> window{};
         size_t window_fill = 0;
 
         while (running_) {
-            // Sync to magic 'ADC2'
+            // Sync to magic 'ADC2'. The port is non-blocking so stop() can exit promptly.
             while (running_) {
                 uint8_t byte = 0;
                 ssize_t rc = ::read(fd, &byte, 1);
@@ -411,7 +466,7 @@ void AdcSampler::workerRp2040() {
                                    | (static_cast<uint32_t>(window[1]) << 8)
                                    | (static_cast<uint32_t>(window[2]) << 16)
                                    | (static_cast<uint32_t>(window[3]) << 24);
-                    if (magic == RP2040_MAGIC) break; // found start of header
+                    if (magic == RP2040_MAGIC) break;
                     continue;
                 }
                 if (rc == 0 || errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -419,85 +474,108 @@ void AdcSampler::workerRp2040() {
                     continue;
                 }
                 if (errno == EINTR) continue;
-                // fatal read error
+                reconnect_reason = std::string("RP2040 read while syncing: ") + std::strerror(errno);
                 goto reconnect;
             }
             if (!running_) break;
 
-            // Read remainder of header
             Rp2040Header hdr{};
             std::memcpy(&hdr, window.data(), 4);
-            if (!readExact(fd, reinterpret_cast<uint8_t*>(&hdr) + 4,
-                           sizeof(hdr) - 4, running_))
+            if (!readExact(fd, reinterpret_cast<uint8_t*>(&hdr) + 4, sizeof(hdr) - 4, running_)) {
+                reconnect_reason = "RP2040 read failed while receiving packet header";
                 goto reconnect;
+            }
 
             if (hdr.magic != RP2040_MAGIC
              || hdr.version != RP2040_VERSION
              || hdr.header_bytes != sizeof(Rp2040Header)
              || hdr.frame_count == 0
              || hdr.frame_count > 4096) {
-                // Bad header — re-sync
+                std::ostringstream oss;
+                oss << "RP2040 invalid header: magic=0x" << std::hex << hdr.magic << std::dec
+                    << " version=" << hdr.version
+                    << " header_bytes=" << hdr.header_bytes
+                    << " frame_count=" << hdr.frame_count;
+                {
+                    std::lock_guard<std::mutex> lock(mtx_);
+                    healthy_ = false;
+                    last_error_ = oss.str();
+                }
                 window_fill = 0;
                 continue;
             }
 
-            // Read frames
             std::vector<Rp2040Frame> frames(hdr.frame_count);
-            if (!readExact(fd, reinterpret_cast<uint8_t*>(frames.data()),
-                           frames.size() * sizeof(Rp2040Frame), running_))
+            if (!readExact(fd, reinterpret_cast<uint8_t*>(frames.data()), frames.size() * sizeof(Rp2040Frame), running_)) {
+                reconnect_reason = "RP2040 read failed while receiving packet frames";
                 goto reconnect;
+            }
 
-            // Read CRC
             uint32_t pkt_crc = 0;
-            if (!readExact(fd, reinterpret_cast<uint8_t*>(&pkt_crc),
-                           sizeof(pkt_crc), running_))
+            if (!readExact(fd, reinterpret_cast<uint8_t*>(&pkt_crc), sizeof(pkt_crc), running_)) {
+                reconnect_reason = "RP2040 read failed while receiving packet CRC";
                 goto reconnect;
+            }
 
-            // Verify CRC
             uint32_t calc = 0;
             calc = crc32Update(calc, reinterpret_cast<const uint8_t*>(&hdr), sizeof(hdr));
-            calc = crc32Update(calc, reinterpret_cast<const uint8_t*>(frames.data()),
-                               frames.size() * sizeof(Rp2040Frame));
+            calc = crc32Update(calc, reinterpret_cast<const uint8_t*>(frames.data()), frames.size() * sizeof(Rp2040Frame));
 
             {
                 std::lock_guard<std::mutex> lock(mtx_);
                 if (calc != pkt_crc) {
                     rp2040_packets_crc_bad_++;
-                    // re-sync after bad CRC
+                    healthy_ = false;
+                    std::ostringstream oss;
+                    oss << "RP2040 packet CRC mismatch: expected 0x" << std::hex << pkt_crc
+                        << " calculated 0x" << calc << std::dec
+                        << " frames=" << hdr.frame_count;
+                    last_error_ = oss.str();
                     window_fill = 0;
                     continue;
                 }
 
-                // Good packet
                 rp2040_packets_ok_++;
-                rp2040_declared_rate_hz_     = hdr.sample_rate_hz;
-                rp2040_firmware_flags_       = hdr.flags;
-                rp2040_firmware_lost_frames_ = hdr.lost_frames;
+                rp2040_declared_rate_hz_       = hdr.sample_rate_hz;
+                rp2040_firmware_flags_         = hdr.flags;
+                rp2040_firmware_lost_frames_   = hdr.lost_frames;
 
-                if (rp2040_have_last_seq_ && hdr.sequence_start != rp2040_last_seq_ + 1u)
+                bool sequence_gap = false;
+                uint32_t expected_seq = 0;
+                if (rp2040_have_last_seq_ && hdr.sequence_start != rp2040_last_seq_ + 1u) {
+                    sequence_gap = true;
+                    expected_seq = rp2040_last_seq_ + 1u;
                     rp2040_sequence_gaps_++;
+                }
                 rp2040_have_last_seq_ = true;
                 rp2040_last_seq_      = frames.back().seq;
 
-                // Determine vref for voltage calc: use firmware rate for ring
-                // but honour the config sample_rate_hz as the declared nominal
                 const auto now = std::chrono::steady_clock::now();
                 for (const auto& f : frames) {
                     pushFrameLocked(f.ch0, f.ch1, now, 0, 0);
                 }
+
+                if (sequence_gap) {
+                    std::ostringstream oss;
+                    oss << "RP2040 sequence gap: expected " << expected_seq
+                        << " got " << hdr.sequence_start;
+                    if (hdr.lost_frames) oss << "; firmware lost_frames=" << hdr.lost_frames;
+                    last_error_ = oss.str();
+                } else if (hdr.flags != 0) {
+                    std::ostringstream oss;
+                    oss << "RP2040 firmware flags=0x" << std::hex << hdr.flags << std::dec
+                        << " lost_frames=" << hdr.lost_frames;
+                    last_error_ = oss.str();
+                } else {
+                    last_error_.clear();
+                }
             }
-            // Re-prep for next packet (window already consumed)
             window_fill = 0;
-        } // inner while
+        }
 
         reconnect:
-        ::close(fd);
-        {
-            std::lock_guard<std::mutex> lock(mtx_);
-            rp2040_connected_ = false;
-        }
-        if (running_)
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        reconnect_with_error(fd, reconnect_reason);
+        if (running_) std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 }
 

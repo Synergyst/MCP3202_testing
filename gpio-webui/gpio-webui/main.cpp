@@ -226,6 +226,12 @@ int main(int argc, char* argv[]) {
     ConfigManager temp_cfg_mgr(context->config_path);
     adc_config.adc_source = temp_cfg_mgr.getSetting("adc_source", "mcp3202-spidev");
     adc_config.rp2040_dev = temp_cfg_mgr.getSetting("rp2040_dev", "/dev/ttyACM0");
+    try {
+        std::string saved_rate = temp_cfg_mgr.getSetting("adc_sample_rate_hz", "");
+        if (!saved_rate.empty()) adc_config.sample_rate_hz = parseUInt32Strict(saved_rate, "adc_sample_rate_hz");
+    } catch (const std::exception& e) {
+        std::cerr << "[CONFIG] Ignoring invalid adc_sample_rate_hz: " << e.what() << std::endl;
+    }
 
     try {
         for (int i = 1; i < argc; ++i) {
