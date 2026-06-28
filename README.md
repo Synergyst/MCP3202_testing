@@ -1,18 +1,18 @@
-# CM4 GPIO, MCP3202 Audio Scope, and Caller ID Lab
+# CM4 GPIO, MCP3202/RP2040 Audio Scope, and Telephony Lab
 
 This project is a Raspberry Pi Compute Module 4 telephony/audio lab. It provides:
 
-- live GPIO monitoring and optional GPIO control
-- MCP3202 dual-channel 12-bit ADC sampling
-- browser oscilloscope/history display
-- WAV capture from the ADC ring buffer
-- software Bell 202 Caller ID FSK decoding from ADC audio
-- CH1817 DAA ring/off-hook control
-- HT9032C/HT9032D hardware Caller ID FSK demodulator monitoring
-- configurable Caller ID source selection
-- configurable auto-answer after ring detection
+- **Live GPIO monitoring and control**: Real-time tracking of the 40-pin header.
+- **Dual-channel 12-bit ADC sampling**: Support for MCP3202 (SPI) or RP2040 (USB CDC).
+- **Browser Oscilloscope**: Live history display with min/max decimation for audio peaks.
+- **WAV capture**: Direct export of ADC ring buffer data with optional DSP effects.
+- **Line State Detection**: DSP-based detection of telephony tones (Dial Tone, Busy, Ringback, etc.) with RI corroboration.
+- **Telephony Coordination**: A state machine managing the lifecycle of a call, including auto-answer (after rings or Caller ID) and auto-hangup.
+- **Caller ID Decoding**: Software Bell 202 FSK decoding from ADC audio and monitoring of HT9032C hardware demodulators.
+- **DAA Control**: CH1817-based ring detection and off-hook control.
+- **Telephony Diagnostics**: Calibration tools for noise floors, tone scanning, and hardware validation.
 
-The MCP3202 is a 12-bit, dual-channel ADC with an SPI serial interface and two single-ended analog inputs [1]. The HT9032 is a Calling Line Identification physical-layer receiver for Bell 202 and V.23 FSK demodulation [2]. The CH1817 DAA provides the telephone line interface, ring indication, hook switch, and receive audio output [3].
+The MCP3202 is a 12-bit, dual-channel ADC with an SPI serial interface [1]. The RP2040 provides a high-speed USB-based ADC alternative. The HT9032 is a Calling Line Identification physical-layer receiver for Bell 202 and V.23 FSK demodulation [2]. The CH1817 DAA provides the telephone line interface, ring indication, hook switch, and receive audio output [3].
 
 ---
 
@@ -26,8 +26,6 @@ This project is deliberately documented with **two** pin-numbering systems only:
 PHYS = physical 40-pin header position, 1 through 40
 BCM  = raw Broadcom GPIO number used by Linux, libgpiod, raspi-gpio, and this program's *_bcm options
 ```
-
-Some online diagrams, including WiringPi/Pi4J diagrams, show a third numbering system. Those numbers are useful for those libraries but **are not raw BCM GPIO numbers**. Do not pass WiringPi/Pi4J GPIO numbers to this program's `--gpio-bcm`, `--adc-cs-bcm`, `--adc-clk-bcm`, `--adc-mosi-bcm`, `--adc-miso-bcm`, or JSON `*_bcm` fields.
 
 Use this translation table when comparing different diagrams:
 
@@ -64,14 +62,6 @@ PHYS 38 -> BCM20 -> WiringPi/Pi4J GPIO# 28
 PHYS 40 -> BCM21 -> WiringPi/Pi4J GPIO# 29
 ```
 
-Quick rule:
-
-```text
-If the option or JSON key says "phys", use the physical header pin number.
-If the option or JSON key says "bcm", use the raw Broadcom number.
-Never use WiringPi/Pi4J GPIO# values unless you are translating them first.
-```
-
 ### Raspberry Pi 40-pin header summary
 
 ```text
@@ -101,8 +91,6 @@ Raspberry Pi 40-pin header, top view, raw BCM labels
 
 ### Project default pin assignments with alternate labels
 
-This is the most important table for this project:
-
 ```text
 Signal                 PHYS pin   raw BCM   WiringPi/Pi4J label   Program setting
 ---------------------------------------------------------------------------------
@@ -127,7 +115,7 @@ Default ADC wiring uses Raspberry Pi SPI0 plus BCM8 as the MCP3202 chip-select.
 
 ```text
 Raspberry Pi CM4 / 40-pin header              MCP3202
---------------------------------              -------
+--------------------------------              ------
 PHYS 17 / 3.3V                     ---------> VDD/VREF pin 8
 PHYS 25 / GND                      ---------> VSS     pin 4
 PHYS 24 / BCM8  / SPI0 CE0_N / CS  ---------> CS/SHDN pin 1
@@ -137,37 +125,6 @@ PHYS 21 / BCM9  / SPI0 MISO        <--------- DOUT    pin 6
 Analog source CH0                  ---------> CH0     pin 2
 Analog source CH1                  ---------> CH1     pin 3
 ```
-
-Same ADC wiring, shown with WiringPi/Pi4J labels for diagram cross-reference only:
-
-```text
-MCP3202 CS/SHDN  -> PHYS 24 -> raw BCM8  -> WiringPi/Pi4J GPIO# 10
-MCP3202 CLK      -> PHYS 23 -> raw BCM11 -> WiringPi/Pi4J GPIO# 14
-MCP3202 DIN      -> PHYS 19 -> raw BCM10 -> WiringPi/Pi4J GPIO# 12
-MCP3202 DOUT     -> PHYS 21 -> raw BCM9  -> WiringPi/Pi4J GPIO# 13
-```
-
-ASCII block diagram:
-
-```text
-                 +------------------------------+
-                 | Raspberry Pi CM4 / Linux SPI |
-                 |                              |
-    BCM8  CE0 ---+------------------------------+---- CS/SHDN
-    BCM11 SCLK --+------------------------------+---- CLK
-    BCM10 MOSI --+------------------------------+---- DIN
-    BCM9  MISO <-+------------------------------+---- DOUT
-                 +------------------------------+
-                                                      MCP3202
-    3.3V ---------------------------------------+---- VDD/VREF
-    GND  ---------------------------------------+---- VSS
-    audio/test input ---------------------------+---- CH0
-    audio/test input ---------------------------+---- CH1
-```
-
-The MCP3202 uses `VDD` as the ADC reference, so a channel tied to 3.3 V should read near full-scale, about `4095`, when `VDD/VREF` is also 3.3 V [1]. Communication is SPI-compatible and the MCP3202 supports SPI modes 0,0 and 1,1 [1]. The `CS/SHDN` pin initiates communication when pulled low and must be pulled high between conversions [1].
-
-Important implementation detail: hardware SPI mode automatically restores SPI0 pins BCM9/10/11 to ALT0 before opening `/dev/spidev0.x`. This prevents a previous GPIO/bit-bang test from leaving the SPI pins as plain GPIO and causing all-zero ADC reads. BCM8 remains a normal GPIO output when `--adc-cs-bcm 8` is used because the application directly drives MCP3202 CS.
 
 ### CH1817 DAA wiring
 
@@ -182,53 +139,11 @@ CH1817 RCV                         ---------> ADC/audio conditioning path
 TIP/RING                           <--------> telephone line interface
 ```
 
-Same CH1817 wiring, shown with WiringPi/Pi4J labels for diagram cross-reference only:
-
-```text
-CH1817 OFFHK -> PHYS 32 -> raw BCM12 -> WiringPi/Pi4J GPIO# 26
-CH1817 RI    -> PHYS 40 -> raw BCM21 -> WiringPi/Pi4J GPIO# 29
-```
-
-ASCII block diagram:
-
-```text
-        Telephone line
-        TIP / RING
-            |
-            v
-     +--------------+
-     |   CH1817     |
-     |     DAA      |
-     |              |
-     | RI     OFFHK |
-     | RCV          |
-     +--+-------+---+
-        |       |
-        |       +-------------------- PHYS 32 / BCM12 output
-        |                             low  = on-hook
-        |                             high = off-hook
-        |
-        +---------------------------- PHYS 40 / BCM21 input
-                                      active-low ring indication
-
-        RCV audio output ------------ MCP3202/ADC audio input path
-```
-
-CH1817 behavior used by the software:
-
-- `OFFHK` low = on-hook.
-- `OFFHK` high = off-hook.
-- `RI` is asserted low during ringing and high between rings/idle.
-- During ring activity, `RI` pulses at the ring frequency, typically around 20 Hz [3].
-- `RCV` is the receive audio output and should be AC-coupled into the downstream receive/ADC path [3].
-
 ### HT9032C full wiring
-
-Default full wiring assumes you added PHYS 15 for DOUT:
 
 ```text
 Raspberry Pi CM4 / 40-pin header              HT9032C
---------------------------------              -------
+--------------------------------              ------
 PHYS 36 / BCM16                    ---------> PDWN
 PHYS 37 / BCM26                    <--------- CDET
 PHYS 15 / BCM22                    <--------- DOUT
@@ -237,79 +152,6 @@ optional unused by default         <--------- RDET
 GND                                ---------> VSS
 3.3V or board supply               ---------> VDD, according to your board design
 TIP/RING FSK input network          --------> TIP/RING inputs
-```
-
-Same HT9032C wiring, shown with WiringPi/Pi4J labels for diagram cross-reference only:
-
-```text
-HT9032C PDWN  -> PHYS 36 -> raw BCM16 -> WiringPi/Pi4J GPIO# 27
-HT9032C CDET  -> PHYS 37 -> raw BCM26 -> WiringPi/Pi4J GPIO# 25
-HT9032C DOUT  -> PHYS 15 -> raw BCM22 -> WiringPi/Pi4J GPIO# 3
-HT9032C DOUTC -> PHYS 38 -> raw BCM20 -> WiringPi/Pi4J GPIO# 28
-HT9032C RDET  -> unused by default; set ht9032.rdet_phys only if wired
-```
-
-ASCII block diagram:
-
-```text
-                 Telephone line / DAA receive path
-                               |
-                               v
-                        +-------------+
-                        |  HT9032C    |
-                        | Caller ID   |
-                        | receiver    |
-                        |             |
-       PHYS 36 BCM16 ---+--> PDWN     |
-       PHYS 37 BCM26 <--+--- CDET     |
-       PHYS 15 BCM22 <--+--- DOUT     |
-       PHYS 38 BCM20 <--+--- DOUTC    |
-       optional      <--+--- RDET     |
-                        +-------------+
-```
-
-HT9032 behavior used by the software:
-
-- `PDWN = 1` means power-down.
-- `PDWN = 0` means power-up [2].
-- `CDET` is an open-drain output that goes low when a valid carrier is present [2].
-- `RDET` is an open-drain output that goes low when valid ringing is detected [2].
-- `DOUT` outputs the demodulated data stream, including the alternating 1/0 pattern, marking, and data [2].
-- `DOUTC` outputs demodulated data after internal validation and does not include the alternating 1/0 pattern [2].
-
-Caller ID Bell 202 facts used by the software:
-
-```text
-Logical 1 / Mark  = 1200 Hz
-Logical 0 / Space = 2200 Hz
-Transmission rate = 1200 bps
-Data format       = serial, binary, asynchronous
-```
-
-The HT9032 datasheet describes Bell 202 Caller ID using a 1200 Hz mark, 2200 Hz space, and 1200 bps asynchronous serial data [2].
-
----
-
-## Default reserved pins
-
-When all current drivers are enabled, these pins are owned by chip drivers and hidden from generic GPIO cards:
-
-```text
-MCP3202/SPI0:
-  PHYS 19 / BCM10 / MOSI
-  PHYS 21 / BCM9  / MISO
-  PHYS 23 / BCM11 / SCLK
-  PHYS 24 / BCM8  / CS
-
-CH1817:
-  PHYS 32 / BCM12 / OFFHK
-  PHYS 40 / BCM21 / RI
-
-HT9032C:
-  PHYS 36 / BCM16 / PDWN
-  PHYS 37 / BCM26 / CDET
-  PHYS 15 / BCM22 / DOUT
-  PHYS 38 / BCM20 / DOUTC
 ```
 
 ---
@@ -322,306 +164,129 @@ make clean
 make
 ```
 
-The executable is:
-
-```text
-/root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server
-```
+The executable is: `/root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server`
 
 ---
 
 ## Running
 
-Recommended current command, matching the local `start.sh` style:
+Recommended current command:
 
 ```bash
 cd /root/mcp-adc/gpio-webui
-/root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server \
-  --gpio-phys 37,32,36,38,40 \
-  --adc-hw-spi \
-  --adc-rate 8000 \
-  --spi-speed 1800000 \
-  --spi-dev /dev/spidev0.0 \
+/root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server \\
+  --gpio-phys 37,32,36,38,40 \\
+  --adc-hw-spi \\
+  --adc-rate 8000 \\
+  --spi-speed 1800000 \\
+  --spi-dev /dev/spidev0.0 \\
   --adc-cs-bcm 8
 ```
 
-Then open:
-
-```text
-http://<raspberry-pi-ip>:8080/
-```
-
-Default listen address is `0.0.0.0`, and default port is `8080`.
+Then open: `http://<raspberry-pi-ip>:8080/`
 
 ---
 
 ## Command-line options
 
-```text
-Server/config:
-  --config PATH        JSON config path, default config.json
-  --host ADDR          listen address, default 0.0.0.0
-  --port PORT          listen port, default 8080
-  -h, --help           show help
+### Server/config
+- `--config PATH`: JSON config path, default `config.json`
+- `--host ADDR`: Listen address, default `0.0.0.0`
+- `--port PORT`: Listen port, default `8080`
+- `-h, --help`: Show help
 
-GPIO exposure:
-  --gpio-only
-  --full-gpio
-  --adc-disable        disable ADC/graph and expose GPIO-only mode
-  --gpio-phys LIST     show only selected physical pins as generic GPIO cards
-  --gpio-bcm LIST      show only selected BCM pins as generic GPIO cards
+### GPIO exposure
+- `--gpio-only` / `--full-gpio`: Disable ADC/graph and expose all 40-pin-header GPIOs.
+- `--adc-disable`: Alias for `--gpio-only`.
+- `--gpio-phys LIST`: Show only selected physical pins as generic GPIO cards.
+- `--gpio-bcm LIST`: Show only selected BCM pins as generic GPIO cards.
 
-ADC/MCP3202:
-  --adc-hw-spi         use Linux spidev hardware SPI
-  --adc-bitbang        use direct GPIO bit-banged SPI
-  --adc-rate HZ        two-channel frame rate, default 8000
-  --adc-history N      ring-buffer samples per channel
-  --adc-vref VOLTS     ADC reference voltage for display, default 3.3
-  --spi-dev PATH       spidev node, default /dev/spidev0.0
-  --spi-speed HZ       SPI clock speed, default 1000000
-  --adc-cs-bcm N       MCP3202 chip-select BCM GPIO, default 8
-  --adc-clk-bcm N      bit-bang/custom reservation clock GPIO, default 11
-  --adc-mosi-bcm N     bit-bang/custom reservation MOSI GPIO, default 10
-  --adc-miso-bcm N     bit-bang/custom reservation MISO GPIO, default 9
-  --adc-gpio-chip N    gpiochip number for software CS, default 0
-```
+### ADC / MCP3202 / RP2040
+- `--adc-source SOURCE`: ADC source: `mcp3202-spidev` (default) or `rp2040`.
+- `--adc-rp2040-dev PATH`: RP2040 USB device path, default `/dev/ttyACM0`.
+- `--adc-hw-spi`: Use Linux spidev hardware SPI (default).
+- `--adc-bitbang`: Use direct GPIO bit-banged SPI.
+- `--adc-rate HZ`: Two-channel frame rate, default `8000`.
+- `--adc-history N`: Ring-buffer samples per channel.
+- `--adc-history-ms MS`: Ring-buffer history duration in milliseconds, default `30000`.
+- `--adc-max-buffer-mb MB`: Cap combined ADC ring-buffer RAM usage, default `64`.
+- `--adc-vref VOLTS`: ADC reference voltage for display, default `3.3`.
+- `--adc-realtime`: Run ADC sampler thread with `SCHED_FIFO` priority.
+- `--adc-rt-priority N`: `SCHED_FIFO` priority (1..99), default `10`.
+- `--adc-cpu N`: Pin ADC sampler thread to CPU N (-1 disables affinity).
+- `--spi-dev PATH`: spidev node, default `/dev/spidev0.0`.
+- `--spi-speed HZ`: SPI clock speed, default `1000000`.
+- `--adc-cs-bcm N`: MCP3202 chip-select BCM GPIO, default `8`.
+- `--adc-clk-bcm N`: Bit-bang/custom reservation clock GPIO, default `11`.
+- `--adc-mosi-bcm N`: Bit-bang/custom reservation MOSI GPIO, default `10`.
+- `--adc-miso-bcm N`: Bit-bang/custom reservation MISO GPIO, default `9`.
+- `--adc-gpio-chip N`: gpiochip number for software CS, default `0`.
 
 ---
 
 ## Web UI sections
 
-### GPIO cards
+The interface is organized into tabs: **Scope / Audio**, **Caller ID**, **Telephony**, and **GPIO**.
 
-Generic GPIO cards show:
+### Scope / Audio
+- **ADC Scope**: Live two-channel history graph with support for Raw, Filtered, or Overlay views.
+- **ADC Configuration**: Switch between RP2040 and MCP3202, and adjust sample rates.
+- **WAV Capture**: Download or preview ring-buffer history as 16-bit PCM WAV.
+- **Audio Effects**: Real-time application of DSP effects (DC block, Hum Notch, Voice AGC, Bandpass, etc.).
 
-- physical pin number
-- BCM GPIO number
-- input/output mode
-- live level
-- transition state
-- measured transition frequency
+### Caller ID
+- **FSK Detector**: Monitors ADC audio for Bell 202 demodulation.
+- **Tuning**: Configurable Mark/Space frequencies, Baud rate, and Analysis window.
+- **Raw Data**: View raw FSK bits and bytes along with the best-confidence decode.
 
-Pins reserved by ADC, CH1817, or HT9032C are hidden from this generic GPIO section to avoid double-requesting GPIO lines.
+### Telephony
+- **Unified Telephony State**: High-level view of the system state (e.g., `Ringing`, `OffHook`, `CallerIdPending`).
+- **Coordinator Controls**: Configure auto-answer (delay, min rings, wait for CID) and auto-hangup logic.
+- **CH1817 DAA**: Monitor RI level and frequency; control on-hook/off-hook state.
+- **Line State Detector**: Real-time DSP identification of line tones (Dial Tone, Busy, etc.) with region-based profiles (e.g., NANP).
+- **Calibration & Diagnostics**: 
+    - Measure idle noise floor to recommend RMS thresholds.
+    - Scan for current line tones.
+    - Capture disconnect profiles.
+    - Export system health and validation checklists.
 
-### MCP3202 Dual-Channel Historical Micro-Scope
-
-Shows:
-
-- ADC health
-- requested and measured sample rate
-- latest raw CH0/CH1 readings
-- latest voltage estimate using configured `VREF`
-- total frames
-- dropped reads
-- live two-channel history graph
-
-WAV capture supports:
-
-```text
-Mono CH0
-Mono CH1
-Stereo CH0 + CH1
-Mono CH0/CH1 mix
-```
-
-Optional audio effects are listed by `/api/audio/modules`.
-
-### Software Caller ID FSK Detector
-
-The software detector reads ADC audio and attempts Bell 202 demodulation.
-
-Tuneable fields:
-
-```text
-Channel:       CH0, CH1, mix, auto
-Mark Hz:       default 1200
-Space Hz:      default 2200
-Baud:          default 1200
-Window ms:     analysis window
-Normalize:     on/off
-Headroom dB:   normalization headroom
-Extra gain dB: post-normalization gain
-DC block:      on/off
-```
-
-The UI does not overwrite Caller ID tune fields while a field is focused or dirty. Use:
-
-```text
-Apply FSK Tune   save current fields
-Reload Settings  reload settings from server/JSON
-```
-
-### CH1817 DAA
-
-Shows:
-
-```text
-RI level
-ringing yes/no
-RI pulse frequency
-on-hook/off-hook state
-last error/status
-```
-
-Controls:
-
-```text
-Go On-Hook
-Go Off-Hook
-Enable/disable auto-answer
-Auto-answer delay in milliseconds
-```
-
-Auto-answer behavior:
-
-```text
-ring detected -> wait auto_answer_delay_ms -> drive OFFHK high
-```
-
-### HT9032C Caller ID Receiver
-
-Shows:
-
-```text
-PDWN/power state
-CDET carrier state
-optional RDET ring state
-DOUT logic level
-DOUTC logic level
-DOUT raw bits and bytes
-DOUTC raw bits and bytes
-parsed Caller ID data when available
-checksum result when available
-```
-
-Monitor modes:
-
-```text
-both   monitor DOUT and DOUTC
-dout   monitor DOUT only
-doutc  monitor DOUTC only
-```
-
-Preferred FSK source selector:
-
-```text
-auto
-software_adc
-ht9032_dout
-ht9032_doutc
-```
-
-Runtime `monitor_mode`, `powered`, active-low flag, and baud changes are allowed. HT9032C physical pin-map changes still require restart so GPIO lines can be safely released and re-requested.
+### GPIO
+- **Generic GPIO cards**: Live monitoring and control of physical header pins (excluding those reserved by chip drivers).
 
 ---
 
 ## API endpoints
 
 ### General
+- `GET  /api/status`: Current state of all exposed GPIOs.
+- `POST /api/config`: Update GPIO modes, states, or server timeout.
+- `GET  /api/system/settings`: Get preferred FSK source.
+- `POST /api/system/settings`: Set preferred FSK source.
 
-```text
-GET  /api/status
-POST /api/config
-GET  /api/system/settings
-POST /api/system/settings
-```
+### ADC / Audio
+- `GET  /api/adc?points=N&view=V&effects=E`: Get scope data.
+- `POST /api/adc/config`: Update ADC source, device, or rate.
+- `GET  /api/adc/wav?ms=N&mode=M&codec=C&effects=E`: Download WAV.
+- `GET  /api/audio/modules`: List available audio DSP effects.
 
-`/api/system/settings` stores the preferred FSK source.
+### Telephony
+- `GET  /api/telephony/state`: Unified coordinator snapshot.
+- `POST /api/telephony/state/settings`: Update coordinator settings.
+- `GET  /api/telephony/line-state`: Current line state and confidence.
+- `POST /api/telephony/line-state/settings`: Update line state settings (region, etc.).
+- `GET  /api/telephony/ch1817`: DAA status.
+- `POST /api/telephony/ch1817/settings`: Update CH1817 settings.
+- `POST /api/telephony/ch1817/offhook`: Drive off-hook/on-hook.
+- `GET  /api/telephony/hardware-check`: System health check.
+- `POST /api/telephony/calibration/rcv-noise-floor`: Measure noise floor.
+- `POST /api/telephony/calibration/tone-scan`: Scan for current tones.
+- `POST /api/telephony/calibration/apply-line-thresholds`: Apply recommended RMS levels.
+- `GET  /api/telephony/diagnostics/export`: Export full diagnostics.
 
-Example:
-
-```json
-{
-  "fsk_source": "auto"
-}
-```
-
-### ADC/audio
-
-```text
-GET /api/adc?points=1600
-GET /api/adc/wav?ms=1000&mode=ch0&codec=pcm16&effects=dc_block
-GET /api/audio/modules
-```
-
-Example ADC response fields:
-
-```json
-{
-  "enabled": true,
-  "healthy": true,
-  "latest_raw": [2259, 4095],
-  "latest_volts": [1.82, 3.3],
-  "sample_rate_hz": 8000,
-  "measured_sample_rate_hz": 7283
-}
-```
-
-### Software Caller ID
-
-```text
-GET  /api/caller-id
-GET  /api/caller-id/settings
-POST /api/caller-id/settings
-```
-
-Example settings POST:
-
-```json
-{
-  "channel": 0,
-  "mark_hz": 1200,
-  "space_hz": 2200,
-  "baud": 1200,
-  "analysis_ms": 5000,
-  "normalize": true,
-  "normalize_headroom_db": 6,
-  "extra_gain_db": 12,
-  "dc_block": true
-}
-```
-
-### CH1817
-
-```text
-GET  /api/telephony/ch1817
-POST /api/telephony/ch1817/settings
-POST /api/telephony/ch1817/offhook
-```
-
-Example off-hook request:
-
-```json
-{
-  "offhook": true
-}
-```
-
-Example auto-answer settings:
-
-```json
-{
-  "auto_answer_enabled": true,
-  "auto_answer_delay_ms": 1500
-}
-```
-
-### HT9032C
-
-```text
-GET  /api/ht9032
-POST /api/ht9032/settings
-```
-
-Example settings:
-
-```json
-{
-  "monitor_mode": "both",
-  "powered": true,
-  "baud": 1200
-}
-```
+### Caller ID
+- `GET  /api/caller-id`: Latest decoded Caller ID data.
+- `GET  /api/caller-id/settings`: FSK detector settings.
+- `POST /api/caller-id/settings`: Update FSK detector settings.
 
 ---
 
@@ -629,113 +294,41 @@ Example settings:
 
 Settings are saved to the selected JSON config file.
 
-Current shape:
-
 ```json
 {
-  "timeout_ms": 50,
-  "fsk_source": "auto",
-  "caller_id_settings": {
-    "channel": 0,
-    "mark_hz": 1200.0,
-    "space_hz": 2200.0,
-    "baud": 1200.0,
-    "analysis_ms": 5000,
-    "normalize": true,
-    "normalize_headroom_db": 6.0,
-    "extra_gain_db": 12.0,
-    "dc_block": true
+  \"timeout_ms\": 50,
+  \"fsk_source\": \"auto\",
+  \"caller_id_settings\": {
+    \"channel\": 0,
+    \"mark_hz\": 1200.0,
+    \"space_hz\": 2200.0,
+    \"baud\": 1200.0,
+    \"analysis_ms\": 5000,
+    \"normalize\": true,
+    \"normalize_headroom_db\": 6.0,
+    \"extra_gain_db\": 12.0,
+    \"dc_block\": true
   },
-  "caller_id_last": {},
-  "ch1817": {
-    "enabled": true,
-    "offhook_phys": 32,
-    "offhook_bcm": 12,
-    "ri_phys": 40,
-    "ri_bcm": 21,
-    "offhook": false,
-    "auto_answer_enabled": false,
-    "auto_answer_delay_ms": 0
+  \"ch1817\": {
+    \"enabled\": true,
+    \"offhook_phys\": 32,
+    \"ri_phys\": 40,
+    \"offhook\": false,
+    \"auto_answer_enabled\": false,
+    \"auto_answer_delay_ms\": 0
   },
-  "ht9032": {
-    "enabled": true,
-    "pdwn_phys": 36,
-    "pdwn_bcm": 16,
-    "cdet_phys": 37,
-    "cdet_bcm": 26,
-    "dout_phys": 15,
-    "dout_bcm": 22,
-    "doutc_phys": 38,
-    "doutc_bcm": 20,
-    "rdet_phys": 0,
-    "rdet_bcm": -1,
-    "pdwn_control": true,
-    "powered": true,
-    "active_low_cdet": true,
-    "active_low_rdet": true,
-    "monitor_mode": "both",
-    "baud": 1200
+  \"ht9032\": {
+    \"enabled\": true,
+    \"pdwn_phys\": 36,
+    \"cdet_phys\": 37,
+    \"dout_phys\": 15,
+    \"doutc_phys\": 38,
+    \"powered\": true,
+    \"monitor_mode\": \"both\",
+    \"baud\": 1200
   },
-  "pins": {}
+  \"pins\": {}
 }
-```
-
----
-
-## Pin validation rules
-
-The server validates chip pin assignments before use.
-
-Rules:
-
-- Only GPIO-capable 40-pin-header physical pins are accepted.
-- Enabled chip signals must not share the same physical pin.
-- Reserved chip pins are hidden from generic GPIO control.
-- CH1817 pin mapping changes require restart.
-- HT9032C physical pin mapping changes require restart; HT9032C `monitor_mode`, `powered`, active-low flag, and baud changes can be applied at runtime.
-- Runtime HT9032C power changes are allowed.
-- Runtime CH1817 off-hook and auto-answer changes are allowed.
-
-GPIO-capable physical pins:
-
-```text
-3, 5, 7, 8, 10, 11, 12, 13, 15, 16, 18,
-19, 21, 22, 23, 24, 26, 27, 28, 29, 31,
-32, 33, 35, 36, 37, 38, 40
-```
-
-If an illegal configuration is submitted through the API/UI, the server returns an error and help text. The browser shows that as a help/alert dialog.
-
----
-
-## Caller ID data flow
-
-```text
-                    +-------------------------+
-                    | Telephone line TIP/RING |
-                    +-----------+-------------+
-                                |
-                                v
-                         +-------------+
-                         |   CH1817    |
-                         | DAA module  |
-                         +--+-------+--+
-                            |       |
-                   RI ------+       +------ RCV audio
-                   |                       |
-                   v                       v
-          CH1817 ring state         MCP3202 CH0/CH1
-          auto-answer logic              ADC samples
-                   |                       |
-                   v                       v
-             OFFHK control       software Bell 202 FSK
-                                           |
-                                           v
-                                     Caller ID parser
-
-Alternative / parallel hardware demodulator path:
-
-       line/receive FSK audio ---> HT9032C ---> DOUT/DOUTC ---> async 1200 bps parser
 ```
 
 ---
@@ -743,89 +336,15 @@ Alternative / parallel hardware demodulator path:
 ## Troubleshooting
 
 ### ADC reads 0/0
+If using MCP3202, verify SPI wiring and check `raspi-gpio get 8-11`. Ensure the pins are in `ALT0` mode. The server now restores these automatically when hardware SPI is used.
 
-If CH1 is tied to 3.3 V and both channels still read zero, the digital SPI path is the likely issue, not the analog input.
+### Line State / Telephony issues
+- Use the **Calibration** tools in the Telephony tab to measure the idle noise floor.
+- Apply the recommended `Silence RMS` and `Min RMS` thresholds.
+- Use the **Tone Scan** to verify that the line is delivering expected frequencies for your region.
+- Check the **Hardware Check** for warnings about ADC health or RI polarity.
 
-Check:
-
-```bash
-raspi-gpio get 8-11
-```
-
-Expected for hardware SPI after startup:
-
-```text
-GPIO 8:  CS, either GPIO output if software-CS is used, or ALT0 if controller CE is used
-GPIO 9:  ALT0 SPI0_MISO
-GPIO 10: ALT0 SPI0_MOSI
-GPIO 11: ALT0 SPI0_SCLK
-```
-
-The server now restores BCM9/10/11 to SPI0 ALT0 automatically when hardware SPI mode is used. BCM8 is intentionally left as a GPIO output when `--adc-cs-bcm 8` is used, because the application drives MCP3202 CS directly.
-
-Useful direct test:
-
-```bash
-/root/mcp-adc/mcp3202_spidev_test --dev /dev/spidev0.0 --speed 1800000 --samples 5
-```
-
-Useful bit-bang sanity test on the same wires:
-
-```bash
-/root/mcp-adc/mcp3202_bitbang_test --cs 8 --clk 11 --din 10 --dout 9 --samples 5 --delay-us 2
-```
-
-### Caller ID FSK is weak or noisy
-
-- Confirm ADC channel selection.
-- Try CH0, CH1, mix, and auto.
-- Increase analysis window.
-- Enable normalization.
-- Try modest extra gain.
-- Compare software ADC decoding against HT9032C `CDET`, `DOUT`, and `DOUTC`.
-- Use `DOUT` for raw visibility and `DOUTC` for cleaner validated data.
-
-### HT9032C shows no carrier
-
-Check:
-
-- `powered` is enabled, or PDWN is otherwise held low.
-- `CDET` polarity matches the hardware. Default is active-low.
-- The HT9032C clock/crystal is running.
-- The input network is connected to the FSK source you intend to test.
-- Caller ID usually appears between the first and second ring.
-
-### CH1817 ring status does not change
-
-Check:
-
-- PHYS 40 / BCM21 is connected to RI.
-- RI is pulled/biased correctly for your board.
-- Ring signal reaches TIP/RING.
-- The Web UI timeout does not affect the CH1817 driver; CH1817 has its own worker.
-
----
-
-## Implementation notes
-
-- MCP3202 hardware SPI mode uses 3-byte transfers compatible with the datasheet's 8-bit segment examples.
-- The ADC ring buffer stores CH0 and CH1 raw 12-bit samples.
-- ADC graph decimation uses min/max buckets so peaks remain visible.
-- WAV export converts raw 12-bit ADC samples to signed 16-bit PCM.
-- Caller ID software decoding scans several bit phases and can auto-select CH0, CH1, or mix.
-- HT9032C digital decoding reads async serial as 1200 bps, 8 data bits, LSB first, one start bit, one stop bit.
-- Caller ID parsing handles SDMF `0x04` and MDMF `0x80` message framing.
-- CH1817 and HT9032C drivers own their GPIO lines directly through `libgpiod`.
-- Generic GPIO cards do not request reserved driver pins.
-
----
-
-## Datasheet-backed facts used by this project
-
-- MCP3202: 12-bit ADC, two single-ended inputs, SPI interface, VDD/VREF reference, supports SPI modes 0,0 and 1,1 [1].
-- MCP3202: `CS/SHDN` low initiates communication; `CS/SHDN` high ends conversion and places the device in standby; it must be high between conversions [1].
-- MCP3202: the analog input code is proportional to `VIN / VDD`, so a 3.3 V input with 3.3 V reference should be near full scale [1].
-- HT9032: Bell 202 Caller ID uses mark 1200 Hz, space 2200 Hz, 1200 bps asynchronous serial data [2].
-- HT9032: `CDET` goes low when valid carrier is present; `DOUT` includes preamble/marking/data; `DOUTC` omits the alternating preamble pattern after validation [2].
-- CH1817: `OFFHK` low is on-hook and high is off-hook; `RI` is active-low and pulses at the ring frequency during ringing [3].
-- CH1817: `RCV` is the receive audio output and must be AC-coupled [3].
+### Caller ID is noisy
+- Confirm ADC channel selection (try CH0, CH1, or Mix).
+- Enable **Normalization** and apply modest **Extra Gain**.
+- Compare software ADC decoding against the HT9032C `CDET` and `DOUTC` lines.
