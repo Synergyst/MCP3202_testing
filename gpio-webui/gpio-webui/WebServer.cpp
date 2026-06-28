@@ -456,6 +456,26 @@ const char* HTML_UI = R"html(
     </div>
 
     <div class="tab-panel" id="tab-telephony">
+    <div class="card cid-card" id="telephonyUnifiedCard">
+        <div class="card-header"><div><span class="pin-title">Unified Telephony State</span><span class="bcm-tag">CH1817 + line DSP + Caller ID</span></div><span class="status-pill" id="tcStatus">-</span></div>
+        <div class="cid-grid">
+            <div class="cid-item">State<b id="tcState">-</b></div><div class="cid-item">Hook<b id="tcHook">-</b></div><div class="cid-item">Safe to answer<b id="tcSafe">-</b></div><div class="cid-item">Ring count<b id="tcRings">-</b></div>
+            <div class="cid-item">Auto-answer<b id="tcAuto">-</b></div><div class="cid-item">Auto-hangup<b id="tcHangup">-</b></div><div class="cid-item">Caller ID wait<b id="tcCidWait">-</b></div><div class="cid-item">Block reason<b id="tcBlock">-</b></div><div class="cid-item">Hangup reason<b id="tcHangupReason">-</b></div><div class="cid-item">Transition<b id="tcTransition">-</b></div>
+        </div>
+        <div class="config-panel record-panel cid-tune">
+            <label><input type="checkbox" id="tcEnabled" checked> coordinator</label>
+            <label><input type="checkbox" id="tcAutoAnswer"> auto-answer</label>
+            <label><input type="checkbox" id="tcWaitCid" checked> wait CID</label>
+            <label>Min rings <input type="number" id="tcMinRings" min="0" max="20" step="1" value="1"></label>
+            <label>Delay <input type="number" id="tcDelay" min="0" max="600000" step="100" value="0"> ms</label>
+            <label><input type="checkbox" id="tcAutoHangup" checked> auto-hangup</label>
+            <label>Disconnect <input type="number" id="tcHangupDisconnect" min="100" max="600000" step="100" value="1500"> ms</label>
+            <label>Warning <input type="number" id="tcHangupWarning" min="100" max="600000" step="100" value="500"> ms</label>
+            <button onclick="applyTelephonyCoordinatorSettings()">Apply Coordinator</button><span class="record-status" id="tcApplyStatus"></span>
+        </div>
+        <div class="cid-raw" id="tcEvents">Coordinator events will appear here.</div>
+        <div class="tiny" id="tcHelp"></div>
+    </div>
     <div class="card cid-card" id="telephonyCard">
         <div class="card-header"><div><span class="pin-title">CH1817 DAA</span><span class="bcm-tag">OFFHK + RI</span></div><span class="status-pill" id="chStatus">-</span></div>
         <div class="cid-grid">
@@ -466,6 +486,41 @@ const char* HTML_UI = R"html(
             <label><input type="checkbox" id="chAutoAnswer"> auto-answer</label><label>Delay <input type="number" id="chAutoDelay" min="0" max="600000" step="100" value="0"> ms</label><button onclick="applyCh1817Settings()">Apply CH1817</button><span class="record-status" id="chApplyStatus"></span>
         </div>
         <div class="tiny" id="chHelp"></div>
+    </div>
+    <div class="card cid-card" id="lineStateCard">
+        <div class="card-header"><div><span class="pin-title">Line State Detector</span><span class="bcm-tag">RCV/CH0 DSP + RI corroboration</span></div><span class="status-pill" id="lsStatus">-</span></div>
+        <div class="cid-grid">
+            <div class="cid-item">State<b id="lsState">-</b></div><div class="cid-item">Confidence<b id="lsConfidence">-</b></div><div class="cid-item">RMS<b id="lsRms">-</b></div><div class="cid-item">Peak<b id="lsPeak">-</b></div>
+            <div class="cid-item">Zero-cross estimate<b id="lsZcr">-</b></div><div class="cid-item">Best tone<b id="lsTone">-</b></div><div class="cid-item">Region<b id="lsRegion">-</b></div><div class="cid-item">Window<b id="lsWindow">-</b></div>
+        </div>
+        <div class="config-panel record-panel cid-tune">
+            <label>Region <select id="lsRegionSetting"><option value="nanp">NANP / North America</option></select></label>
+            <label>Window <input type="number" id="lsWindowSetting" min="20" max="2000" step="10" value="100"> ms</label>
+            <label>Min RMS <input type="number" id="lsMinRms" min="0" max="1" step="0.0005" value="0.002"></label>
+            <label>Silence RMS <input type="number" id="lsSilenceRms" min="0" max="1" step="0.0001" value="0.0008"></label>
+            <label><input type="checkbox" id="lsUseRi" checked> use RI</label>
+            <button onclick="applyLineStateSettings()">Apply Line State</button><span class="record-status" id="lsApplyStatus"></span>
+        </div>
+        <div class="cid-raw" id="lsTones">Tone diagnostics will appear here.</div>
+        <div class="tiny" id="lsHelp"></div>
+    </div>
+    <div class="card cid-card" id="telephonyDiagnosticsCard">
+        <div class="card-header"><div><span class="pin-title">Calibration / Hardware Diagnostics</span><span class="bcm-tag">RCV noise + tone scan + safety warnings</span></div><span class="status-pill" id="tdStatus">-</span></div>
+        <div class="cid-grid">
+            <div class="cid-item">ADC health<b id="tdAdc">-</b></div><div class="cid-item">RCV RMS<b id="tdRms">-</b></div><div class="cid-item">RCV peak<b id="tdPeak">-</b></div><div class="cid-item">Warnings<b id="tdWarnCount">-</b></div>
+            <div class="cid-item">RI mode<b id="tdRiMode">-</b></div><div class="cid-item">Silence RMS rec<b id="tdSilenceRec">-</b></div><div class="cid-item">Min RMS rec<b id="tdMinRec">-</b></div><div class="cid-item">Tone threshold<b id="tdToneThresh">-</b></div>
+        </div>
+        <div class="config-panel record-panel cid-tune">
+            <button onclick="runRcvCalibration()">Measure Idle Noise</button>
+            <button onclick="runToneScan()">Scan Current Tone</button>
+            <button onclick="captureDisconnectProfile()">Capture Disconnect Profile</button>
+            <button onclick="applyRecommendedThresholds()">Apply Thresholds</button>
+            <button onclick="exportDiagnostics()">Export Diagnostics</button>
+            <label>RI mode <select id="tdRiModeSetting"><option value="auto">auto</option><option value="pulsed">pulsed</option><option value="envelope">envelope</option></select></label>
+            <button onclick="applyCalibrationSettings()">Apply Calibration</button><span class="record-status" id="tdApplyStatus"></span>
+        </div>
+        <div class="cid-raw" id="tdOutput">Diagnostics will appear here.</div>
+        <div class="tiny" id="tdHelp"></div>
     </div>
     </div>
 
@@ -584,6 +639,69 @@ const char* HTML_UI = R"html(
             return ch === 0 ? 'CH0' : (ch === 1 ? 'CH1' : (ch === 2 ? 'CH0+CH1 mix' : (ch === -1 ? 'Auto' : '-')));
         }
 
+        function makeSettingsGuard(ids, statusId) {
+            let dirty = false;
+            let applying = false;
+            function statusEl() { return statusId ? document.getElementById(statusId) : null; }
+            function setStatus(text) { const el = statusEl(); if (el) el.textContent = text; }
+            function markDirty() { if (applying) return; dirty = true; setStatus('Unsaved changes'); }
+            function focused() { const activeId = document.activeElement && document.activeElement.id; return ids.includes(activeId); }
+            function shouldFill(force=false) { return !!force || (!dirty && !focused() && !applying); }
+            function beginApply() { applying = true; setStatus('Applying...'); }
+            function finishApply(text='Applied') { applying = false; dirty = false; setStatus(text); }
+            function failApply(text) { applying = false; setStatus(text || 'Failed'); }
+            function clearDirty(text='') { dirty = false; applying = false; setStatus(text); }
+            function wire() {
+                ids.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) { el.addEventListener('input', markDirty); el.addEventListener('change', markDirty); }
+                });
+            }
+            return { markDirty, focused, shouldFill, beginApply, finishApply, failApply, clearDirty, wire };
+        }
+
+        const chGuard = makeSettingsGuard(['chAutoAnswer','chAutoDelay'], 'chApplyStatus');
+        const tcGuard = makeSettingsGuard(['tcEnabled','tcAutoAnswer','tcWaitCid','tcMinRings','tcDelay','tcAutoHangup','tcHangupDisconnect','tcHangupWarning'], 'tcApplyStatus');
+        const lsGuard = makeSettingsGuard(['lsRegionSetting','lsWindowSetting','lsMinRms','lsSilenceRms','lsUseRi'], 'lsApplyStatus');
+        const tdGuard = makeSettingsGuard(['tdRiModeSetting'], 'tdApplyStatus');
+        function wireSettingsGuards() { chGuard.wire(); tcGuard.wire(); lsGuard.wire(); tdGuard.wire(); window.__settingsGuards = { chGuard, tcGuard, lsGuard, tdGuard }; }
+
+        function fillCh1817Settings(settings, force=false) {
+            if (!settings || !chGuard.shouldFill(force)) return;
+            document.getElementById('chAutoAnswer').checked = settings.auto_answer_enabled || false;
+            document.getElementById('chAutoDelay').value = settings.auto_answer_delay_ms ?? 0;
+            if (force) chGuard.clearDirty('');
+        }
+
+        function fillTelephonyCoordinatorSettings(settings, force=false) {
+            if (!settings || !tcGuard.shouldFill(force)) return;
+            document.getElementById('tcEnabled').checked = settings.enabled !== false;
+            document.getElementById('tcAutoAnswer').checked = settings.auto_answer_enabled || false;
+            document.getElementById('tcWaitCid').checked = settings.caller_id_before_auto_answer !== false;
+            document.getElementById('tcMinRings').value = settings.min_rings_before_answer ?? 1;
+            document.getElementById('tcDelay').value = settings.auto_answer_delay_ms ?? 0;
+            document.getElementById('tcAutoHangup').checked = settings.auto_hangup_enabled !== false;
+            document.getElementById('tcHangupDisconnect').value = settings.auto_hangup_after_disconnect_ms ?? 1500;
+            document.getElementById('tcHangupWarning').value = settings.auto_hangup_after_warning_ms ?? 500;
+            if (force) tcGuard.clearDirty('');
+        }
+
+        function fillLineStateSettings(settings, force=false) {
+            if (!settings || !lsGuard.shouldFill(force)) return;
+            document.getElementById('lsRegionSetting').value = settings.region || 'nanp';
+            document.getElementById('lsWindowSetting').value = settings.analysis_window_ms ?? 100;
+            document.getElementById('lsMinRms').value = settings.min_rms ?? 0.002;
+            document.getElementById('lsSilenceRms').value = settings.silence_rms ?? 0.0008;
+            document.getElementById('lsUseRi').checked = settings.use_ri_corroboration !== false;
+            if (force) lsGuard.clearDirty('');
+        }
+
+        function fillCalibrationSettings(settings, force=false) {
+            if (!settings || !tdGuard.shouldFill(force)) return;
+            document.getElementById('tdRiModeSetting').value = settings.ri_mode || 'auto';
+            if (force) tdGuard.clearDirty('');
+        }
+
         let cidTuneDirty = false;
         function markCidTuneDirty() { cidTuneDirty = true; document.getElementById('cidTuneStatus').textContent = 'Unsaved changes'; }
         function cidTuneFocused() { return ['cidTuneChannel','cidTuneMark','cidTuneSpace','cidTuneBaud','cidTuneWindow','cidTuneNormalize','cidTuneHeadroom','cidTuneGain','cidTuneDc'].includes(document.activeElement && document.activeElement.id); }
@@ -679,12 +797,116 @@ const char* HTML_UI = R"html(
                 const res = await fetch('/api/telephony/ch1817'); const data = await res.json();
                 const st = document.getElementById('chStatus'); st.textContent = data.ringing ? 'RINGING' : (data.offhook ? 'OFF-HOOK' : 'IDLE'); st.className = `status-pill ${data.ringing ? 'status-ok' : 'status-bad'}`;
                 document.getElementById('chRiLevel').textContent = data.ri_level_text || '-'; document.getElementById('chRinging').textContent = data.ringing ? 'YES' : 'NO'; document.getElementById('chFreq').textContent = `${(data.ri_frequency_hz || 0).toFixed(2)} Hz`; document.getElementById('chHook').textContent = data.offhook ? 'off-hook' : 'on-hook';
-                if (document.activeElement?.id !== 'chAutoDelay' && document.activeElement?.id !== 'chAutoAnswer') { document.getElementById('chAutoAnswer').checked = data.settings?.auto_answer_enabled || false; document.getElementById('chAutoDelay').value = data.settings?.auto_answer_delay_ms ?? 0; }
+                fillCh1817Settings(data.settings);
                 document.getElementById('chHelp').textContent = data.last_error || data.help || '';
             } catch(err) { document.getElementById('chHelp').textContent = `CH1817 error: ${err.message || err}`; }
         }
 
-        async function setChOffhook(offhook) { await fetch('/api/telephony/ch1817/offhook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offhook})}); fetchTelephony(); }
+        let lastCalibrationRecommendations = null;
+        async function fetchTelephonyDiagnostics() {
+            try {
+                const res = await fetch('/api/telephony/hardware-check'); const data = await res.json();
+                const warnings = data.warnings || [];
+                document.getElementById('tdStatus').textContent = warnings.length ? 'WARN' : 'OK';
+                document.getElementById('tdStatus').className = `status-pill ${warnings.length ? 'status-bad' : 'status-ok'}`;
+                document.getElementById('tdAdc').textContent = data.adc?.healthy ? 'healthy' : 'unhealthy';
+                document.getElementById('tdRms').textContent = (data.line_state?.rms || 0).toFixed(6);
+                document.getElementById('tdPeak').textContent = (data.line_state?.peak || 0).toFixed(6);
+                document.getElementById('tdWarnCount').textContent = warnings.length;
+                document.getElementById('tdRiMode').textContent = data.calibration?.ri_mode || 'auto';
+                document.getElementById('tdToneThresh').textContent = data.line_state?.settings?.tone_detect_threshold ?? '-';
+                fillCalibrationSettings(data.calibration);
+                document.getElementById('tdOutput').textContent = `Warnings:\n${warnings.join('\n') || 'none'}\n\nValidation reminders available at /api/telephony/validation-checklist`;
+            } catch(err) { const el=document.getElementById('tdHelp'); if(el) el.textContent = `Diagnostics error: ${err.message || err}`; }
+        }
+        async function runRcvCalibration() {
+            const st=document.getElementById('tdApplyStatus'); st.textContent='Measuring...';
+            try { const res=await fetch('/api/telephony/calibration/rcv-noise-floor',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duration_ms:3000,window_ms:100})}); const data=await res.json(); if(!res.ok || data.status==='error') throw new Error(data.error||'failed'); lastCalibrationRecommendations=data.recommendations; document.getElementById('tdSilenceRec').textContent=Number(data.recommendations.recommended_silence_rms||0).toFixed(6); document.getElementById('tdMinRec').textContent=Number(data.recommendations.recommended_min_rms||0).toFixed(6); document.getElementById('tdOutput').textContent=JSON.stringify(data,null,2); st.textContent='Measured'; }
+            catch(err){ st.textContent=`Failed: ${err.message||err}`; }
+        }
+        async function runToneScan() {
+            const st=document.getElementById('tdApplyStatus'); st.textContent='Scanning...';
+            try { const res=await fetch('/api/telephony/calibration/tone-scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duration_ms:1000,region:'nanp'})}); const data=await res.json(); if(!res.ok || data.status==='error') throw new Error(data.error||'failed'); document.getElementById('tdOutput').textContent=JSON.stringify(data,null,2); st.textContent='Scanned'; }
+            catch(err){ st.textContent=`Failed: ${err.message||err}`; }
+        }
+        async function captureDisconnectProfile() {
+            const st=document.getElementById('tdApplyStatus'); st.textContent='Capturing disconnect profile...';
+            try { const res=await fetch('/api/telephony/calibration/capture-disconnect-profile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duration_ms:3000,label:'ata_custom'})}); const data=await res.json(); if(!res.ok || data.status==='error') throw new Error(data.error||'failed'); document.getElementById('tdOutput').textContent=JSON.stringify(data,null,2); st.textContent='Captured'; }
+            catch(err){ st.textContent=`Failed: ${err.message||err}`; }
+        }
+        async function applyRecommendedThresholds() {
+            if (!lastCalibrationRecommendations) { alert('Run idle noise calibration first.'); return; }
+            const st=document.getElementById('tdApplyStatus'); st.textContent='Applying thresholds...';
+            try { const res=await fetch('/api/telephony/calibration/apply-line-thresholds',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({silence_rms:lastCalibrationRecommendations.recommended_silence_rms,min_rms:lastCalibrationRecommendations.recommended_min_rms})}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'failed'); st.textContent='Thresholds applied'; if (data.line_state_settings) { lsGuard.clearDirty(''); fillLineStateSettings(data.line_state_settings, true); } fetchLineState(); }
+            catch(err){ st.textContent=`Failed: ${err.message||err}`; }
+        }
+        async function applyCalibrationSettings() {
+            const body = { ri_mode: document.getElementById('tdRiModeSetting').value };
+            tdGuard.beginApply();
+            try { const res=await fetch('/api/telephony/calibration/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'failed'); tdGuard.finishApply('Calibration applied'); fillCalibrationSettings(data.settings || body, true); fetchTelephonyDiagnostics(); }
+            catch(err){ tdGuard.failApply(`Failed: ${err.message||err}`); }
+        }
+        async function exportDiagnostics() {
+            try { const res=await fetch('/api/telephony/diagnostics/export'); const data=await res.json(); document.getElementById('tdOutput').textContent=JSON.stringify(data,null,2); }
+            catch(err){ document.getElementById('tdHelp').textContent=`Export failed: ${err.message||err}`; }
+        }
+
+        async function fetchTelephonyCoordinator() {
+            try {
+                const res = await fetch('/api/telephony/state'); const data = await res.json();
+                const st = document.getElementById('tcStatus'); const state = data.state || 'unknown';
+                st.textContent = state.toUpperCase(); st.className = `status-pill ${data.safe_to_answer ? 'status-ok' : 'status-bad'}`;
+                document.getElementById('tcState').textContent = state;
+                document.getElementById('tcHook').textContent = data.hook_offhook ? 'off-hook' : 'on-hook';
+                document.getElementById('tcSafe').textContent = data.safe_to_answer ? 'YES' : 'NO';
+                document.getElementById('tcRings').textContent = data.ring_count ?? 0;
+                document.getElementById('tcAuto').textContent = data.auto_answer_armed ? 'armed' : (data.settings?.auto_answer_enabled ? 'enabled' : 'disabled');
+                document.getElementById('tcHangup').textContent = data.auto_hangup_armed ? 'armed' : (data.settings?.auto_hangup_enabled ? 'enabled' : 'disabled');
+                document.getElementById('tcCidWait').textContent = data.caller_id_waiting ? 'YES' : 'NO';
+                document.getElementById('tcBlock').textContent = data.answer_block_reason || '-';
+                document.getElementById('tcHangupReason').textContent = data.hangup_reason || data.last_auto_hangup_reason || '-';
+                document.getElementById('tcTransition').textContent = data.last_transition || '-';
+                fillTelephonyCoordinatorSettings(data.settings);
+                document.getElementById('tcEvents').textContent = `Status: ${data.status || '-'}\nLine: ${data.inputs?.line_state || '-'} (${Number(data.inputs?.line_confidence||0).toFixed(3)})  CID: ${data.inputs?.caller_detected ? 'detected' : (data.inputs?.caller_status || '-')}\n\n${(data.events || []).slice(-12).join('\n')}`;
+                document.getElementById('tcHelp').textContent = data.last_error || '';
+            } catch(err) { const el=document.getElementById('tcHelp'); if(el) el.textContent = `Telephony coordinator error: ${err.message || err}`; }
+        }
+
+        async function applyTelephonyCoordinatorSettings() {
+            const body = {enabled:document.getElementById('tcEnabled').checked,auto_answer_enabled:document.getElementById('tcAutoAnswer').checked,caller_id_before_auto_answer:document.getElementById('tcWaitCid').checked,min_rings_before_answer:parseInt(document.getElementById('tcMinRings').value||'1',10),auto_answer_delay_ms:parseInt(document.getElementById('tcDelay').value||'0',10),auto_hangup_enabled:document.getElementById('tcAutoHangup').checked,auto_hangup_after_disconnect_ms:parseInt(document.getElementById('tcHangupDisconnect').value||'1500',10),auto_hangup_after_warning_ms:parseInt(document.getElementById('tcHangupWarning').value||'500',10)};
+            tcGuard.beginApply();
+            try { const res=await fetch('/api/telephony/state/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'failed'); tcGuard.finishApply('Applied'); fillTelephonyCoordinatorSettings(data.settings || body, true); fetchTelephonyCoordinator(); }
+            catch(err){ tcGuard.failApply(`Failed: ${err.message||err}`); }
+        }
+
+        async function fetchLineState() {
+            try {
+                const res = await fetch('/api/telephony/line-state'); const data = await res.json();
+                const st = document.getElementById('lsStatus'); const state = data.state || 'unknown';
+                st.textContent = state.toUpperCase(); st.className = `status-pill ${['ringing','dial_tone','busy','reorder','ringback'].includes(state) ? 'status-ok' : 'status-bad'}`;
+                document.getElementById('lsState').textContent = state;
+                document.getElementById('lsConfidence').textContent = (data.confidence || 0).toFixed(3);
+                document.getElementById('lsRms').textContent = (data.rms || 0).toFixed(6);
+                document.getElementById('lsPeak').textContent = (data.peak || 0).toFixed(6);
+                document.getElementById('lsZcr').textContent = `${(data.zero_crossing_hz || 0).toFixed(1)} Hz`;
+                document.getElementById('lsTone').textContent = data.best_tone || '-';
+                document.getElementById('lsRegion').textContent = data.region_label || data.region || '-';
+                document.getElementById('lsWindow').textContent = `${data.window_samples || 0} @ ${data.sample_rate_hz || 0} Hz`;
+                fillLineStateSettings(data.settings);
+                const tones = (data.tones || []).map(t => `${Number(t.frequency_hz).toFixed(1)} Hz  norm=${Number(t.normalized_power||0).toFixed(4)}  dB=${Number(t.relative_db||-120).toFixed(1)}`).join('\n');
+                document.getElementById('lsTones').textContent = `Status: ${data.status || '-'}\nRI active: ${data.ri_active ? 'YES' : 'NO'}  RI ringing: ${data.ri_ringing ? 'YES' : 'NO'}  RI freq: ${(data.ri_frequency_hz || 0).toFixed(2)} Hz\n${tones || 'No tone bins'}`;
+                document.getElementById('lsHelp').textContent = data.last_error || '';
+            } catch(err) { const el=document.getElementById('lsHelp'); if(el) el.textContent = `Line state error: ${err.message || err}`; }
+        }
+
+        async function applyLineStateSettings() {
+            const body = {region:document.getElementById('lsRegionSetting').value,analysis_window_ms:parseInt(document.getElementById('lsWindowSetting').value||'100',10),min_rms:parseFloat(document.getElementById('lsMinRms').value||'0.002'),silence_rms:parseFloat(document.getElementById('lsSilenceRms').value||'0.0008'),use_ri_corroboration:document.getElementById('lsUseRi').checked};
+            lsGuard.beginApply();
+            try { const res=await fetch('/api/telephony/line-state/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'failed'); lsGuard.finishApply('Applied'); fillLineStateSettings(data.settings || body, true); fetchLineState(); }
+            catch(err){ lsGuard.failApply(`Failed: ${err.message||err}`); }
+        }
+
+        async function setChOffhook(offhook) { await fetch('/api/telephony/ch1817/offhook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offhook})}); fetchTelephony(); fetchLineState(); }
         async function applyCh1817Settings() {
             const st=document.getElementById('chApplyStatus'); st.textContent='Applying...';
             try { const res=await fetch('/api/telephony/ch1817/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_answer_enabled:document.getElementById('chAutoAnswer').checked,auto_answer_delay_ms:parseInt(document.getElementById('chAutoDelay').value||'0',10)})}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'failed'); st.textContent='Applied'; fetchTelephony(); }
@@ -1070,16 +1292,16 @@ const char* HTML_UI = R"html(
 
         const ADC_ENABLED = __ADC_ENABLED__;
         setInterval(fetchStatus, 250);
-        if (ADC_ENABLED) { setInterval(fetchAdcScope, 120); setInterval(fetchCallerId, 1000); }
-        setInterval(fetchTelephony, 500);
-        window.onload = () => { restoreSimpleUiPrefs(); selectTab(loadUiPref('activeTab', 'scope')); fetchStatus(); wireCallerIdTuneDirty(); wireAdcConfigDirty(); if (ADC_ENABLED) { loadAudioModules().then(() => fetchAdcScope()); fetchCallerId(); } fetchTelephony(); };
+        if (ADC_ENABLED) { setInterval(fetchAdcScope, 120); setInterval(fetchCallerId, 1000); setInterval(fetchLineState, 500); }
+        setInterval(fetchTelephony, 500); setInterval(fetchTelephonyCoordinator, 500); setInterval(fetchTelephonyDiagnostics, 1500);
+        window.onload = () => { restoreSimpleUiPrefs(); selectTab(loadUiPref('activeTab', 'scope')); fetchStatus(); wireCallerIdTuneDirty(); wireSettingsGuards(); wireAdcConfigDirty(); if (ADC_ENABLED) { loadAudioModules().then(() => fetchAdcScope()); fetchCallerId(); fetchLineState(); } fetchTelephony(); fetchTelephonyCoordinator(); fetchTelephonyDiagnostics(); };
     </script>
 </body>
 </html>
 )html";
 
-WebServer::WebServer(std::map<int, std::shared_ptr<PinState>>& reg, ConfigManager& cfg, GpioManager& gpio, std::shared_ptr<SystemContext> ctx, AdcSampler* adc, CallerIdDetector* cid, Ch1817Driver* ch1817, std::set<int> reserved) 
-    : registry(reg), config_mgr(cfg), gpio_mgr(gpio), context(ctx), adc_sampler(adc), caller_id_detector(cid), ch1817_driver(ch1817), reserved_bcm_pins(std::move(reserved)) {
+WebServer::WebServer(std::map<int, std::shared_ptr<PinState>>& reg, ConfigManager& cfg, GpioManager& gpio, std::shared_ptr<SystemContext> ctx, AdcSampler* adc, CallerIdDetector* cid, Ch1817Driver* ch1817, LineStateDetector* line_state, TelephonyCoordinator* telco, TelephonyDiagnostics* tel_diag, std::set<int> reserved) 
+    : registry(reg), config_mgr(cfg), gpio_mgr(gpio), context(ctx), adc_sampler(adc), caller_id_detector(cid), ch1817_driver(ch1817), line_state_detector(line_state), telephony_coordinator(telco), telephony_diagnostics(tel_diag), reserved_bcm_pins(std::move(reserved)) {
     setup_routes();
 }
 
@@ -1220,9 +1442,96 @@ void WebServer::setup_routes() {
         }
     });
 
+    svr.Get("/api/telephony/hardware-check", [this](const httplib::Request&, httplib::Response& res) {
+        if (!telephony_diagnostics) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"Telephony diagnostics disabled\"}", "application/json"); return; }
+        res.set_content(telephony_diagnostics->hardwareCheck().dump(), "application/json");
+    });
+
+    svr.Get("/api/telephony/diagnostics/export", [this](const httplib::Request&, httplib::Response& res) {
+        if (!telephony_diagnostics) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"Telephony diagnostics disabled\"}", "application/json"); return; }
+        res.set_content(telephony_diagnostics->diagnosticsExport().dump(), "application/json");
+    });
+
+    svr.Get("/api/telephony/events", [this](const httplib::Request&, httplib::Response& res) {
+        if (!telephony_diagnostics) { res.status = 404; res.set_content("{\"events\":[]}", "application/json"); return; }
+        res.set_content(telephony_diagnostics->eventsJson().dump(), "application/json");
+    });
+
+    svr.Get("/api/telephony/validation-checklist", [this](const httplib::Request&, httplib::Response& res) {
+        if (!telephony_diagnostics) { res.status = 404; res.set_content("{\"items\":[]}", "application/json"); return; }
+        res.set_content(telephony_diagnostics->validationChecklist().dump(), "application/json");
+    });
+
+    svr.Get("/api/telephony/calibration/settings", [this](const httplib::Request&, httplib::Response& res) {
+        if (!telephony_diagnostics) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"Telephony diagnostics disabled\"}", "application/json"); return; }
+        res.set_content(telephony_diagnostics->calibrationSettingsJson().dump(), "application/json");
+    });
+
+    svr.Post("/api/telephony/calibration/settings", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!telephony_diagnostics) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"Telephony diagnostics disabled\"}", "application/json"); return; }
+        try { json j = json::parse(req.body.empty() ? "{}" : req.body); telephony_diagnostics->updateCalibrationSettingsFromJson(j); res.set_content(json{{"status","ok"},{"settings",telephony_diagnostics->calibrationSettingsJson()}}.dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
+    });
+
+    svr.Post("/api/telephony/calibration/rcv-noise-floor", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!telephony_diagnostics) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"Telephony diagnostics disabled\"}", "application/json"); return; }
+        try { json j = json::parse(req.body.empty() ? "{}" : req.body); res.set_content(telephony_diagnostics->calibrateRcvNoiseFloor(j.value("duration_ms", 3000), j.value("window_ms", 100)).dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
+    });
+
+    svr.Post("/api/telephony/calibration/tone-scan", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!telephony_diagnostics) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"Telephony diagnostics disabled\"}", "application/json"); return; }
+        try { json j = json::parse(req.body.empty() ? "{}" : req.body); res.set_content(telephony_diagnostics->toneScan(j.value("duration_ms", 1000), j.value("region", std::string("nanp"))).dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
+    });
+
+    svr.Post("/api/telephony/calibration/capture-disconnect-profile", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!telephony_diagnostics) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"Telephony diagnostics disabled\"}", "application/json"); return; }
+        try { json j = json::parse(req.body.empty() ? "{}" : req.body); res.set_content(telephony_diagnostics->captureDisconnectProfile(j.value("duration_ms", 3000), j.value("label", std::string("ata_custom"))).dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
+    });
+
+    svr.Post("/api/telephony/calibration/apply-line-thresholds", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!telephony_diagnostics || !line_state_detector) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"Diagnostics or line state disabled\"}", "application/json"); return; }
+        try { json j = json::parse(req.body.empty() ? "{}" : req.body); auto s = line_state_detector->settings(); s.silence_rms = j.value("silence_rms", s.silence_rms); s.min_rms = j.value("min_rms", s.min_rms); line_state_detector->updateSettings(s); res.set_content(json{{"status","ok"},{"line_state_settings",line_state_detector->settingsJson()}}.dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
+    });
+
+    svr.Get("/api/telephony/state", [this](const httplib::Request&, httplib::Response& res) {
+        if (!telephony_coordinator) { res.status = 404; res.set_content("{\"enabled\":false,\"error\":\"Telephony coordinator disabled\"}", "application/json"); return; }
+        res.set_content(telephony_coordinator->snapshotJson().dump(), "application/json");
+    });
+
+    svr.Get("/api/telephony/state/settings", [this](const httplib::Request&, httplib::Response& res) {
+        if (!telephony_coordinator) { res.status = 404; res.set_content("{\"enabled\":false,\"error\":\"Telephony coordinator disabled\"}", "application/json"); return; }
+        res.set_content(telephony_coordinator->settingsJson().dump(), "application/json");
+    });
+
+    svr.Post("/api/telephony/state/settings", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!telephony_coordinator) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"Telephony coordinator disabled\"}", "application/json"); return; }
+        try { json j = json::parse(req.body.empty() ? "{}" : req.body); telephony_coordinator->updateSettingsFromJson(j); res.set_content(json{{"status","ok"},{"settings",telephony_coordinator->settingsJson()}}.dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
+    });
+
     svr.Get("/api/telephony/ch1817", [this](const httplib::Request&, httplib::Response& res) {
         if (!ch1817_driver) { res.status = 404; res.set_content("{\"enabled\":false,\"error\":\"CH1817 driver disabled\"}", "application/json"); return; }
         res.set_content(ch1817_driver->snapshotJson().dump(), "application/json");
+    });
+
+    svr.Get("/api/telephony/line-state", [this](const httplib::Request&, httplib::Response& res) {
+        if (!line_state_detector) { res.status = 404; res.set_content("{\"enabled\":false,\"error\":\"Line state detector disabled\"}", "application/json"); return; }
+        res.set_content(line_state_detector->snapshotJson().dump(), "application/json");
+    });
+
+    svr.Get("/api/telephony/line-state/settings", [this](const httplib::Request&, httplib::Response& res) {
+        if (!line_state_detector) { res.status = 404; res.set_content("{\"enabled\":false,\"error\":\"Line state detector disabled\"}", "application/json"); return; }
+        res.set_content(line_state_detector->settingsJson().dump(), "application/json");
+    });
+
+    svr.Post("/api/telephony/line-state/settings", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!line_state_detector) { res.status = 404; res.set_content("{\"status\":\"error\",\"error\":\"Line state detector disabled\"}", "application/json"); return; }
+        try { json j = json::parse(req.body.empty() ? "{}" : req.body); line_state_detector->updateSettingsFromJson(j); res.set_content(json{{"status","ok"},{"settings",line_state_detector->settingsJson()}}.dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
     });
 
     svr.Post("/api/telephony/ch1817/settings", [this](const httplib::Request& req, httplib::Response& res) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MCP3202.hpp"
+#include "SharedSignalBuffer.hpp"
 
 #include <array>
 #include <atomic>
@@ -77,7 +78,7 @@ public:
     };
 
     AdcSampler();
-    explicit AdcSampler(Config config);
+    explicit AdcSampler(Config config, std::shared_ptr<SharedSignalBuffer> signal_buffer);
     ~AdcSampler();
 
     AdcSampler(const AdcSampler&) = delete;
@@ -110,6 +111,7 @@ private:
     std::vector<uint16_t> copyRecentExactLocked(int channel, size_t frames) const;
     static uint64_t ema(uint64_t old_value, uint64_t sample, uint32_t weight = 31);
 
+    std::shared_ptr<SharedSignalBuffer> signal_buffer_;
     Config config_;
     mutable std::mutex mtx_;
     std::array<std::vector<uint16_t>, 2> ring_;

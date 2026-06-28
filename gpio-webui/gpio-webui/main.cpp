@@ -16,6 +16,9 @@
 #include "AdcSampler.hpp"
 #include "CallerIdDetector.hpp"
 #include "Ch1817Driver.hpp"
+#include "LineStateDetector.hpp"
+#include "TelephonyCoordinator.hpp"
+#include "TelephonyDiagnostics.hpp"
 #include "HeaderPins.hpp"
 
 namespace {
@@ -381,19 +384,29 @@ int main(int argc, char* argv[]) {
 
     std::unique_ptr<AdcSampler> adc_sampler;
     std::unique_ptr<CallerIdDetector> caller_id_detector;
+    std::unique_ptr<LineStateDetector> line_state_detector;
+    std::unique_ptr<TelephonyCoordinator> telephony_coordinator;
+    std::unique_ptr<TelephonyDiagnostics> telephony_diagnostics;
     if (adc_config.enabled) {
-        adc_sampler = std::make_unique<AdcSampler>(adc_config);
+        adc_sampler = std::make_unique<AdcSampler>(adc_config, context->signal_buffer);
         adc_sampler->start();
         caller_id_detector = std::make_unique<CallerIdDetector>(adc_sampler.get(), context);
         caller_id_detector->start();
     }
 
     if (ch1817_driver) ch1817_driver->start();
+    if (adc_sampler) {
+        line_state_detector = std::make_unique<LineStateDetector>(context, adc_sampler.get(), ch1817_driver.get());
+        line_state_detector->start();
+    }
+    telephony_coordinator = std::make_unique<TelephonyCoordinator>(context, ch1817_driver.get(), line_state_detector.get(), caller_id_detector.get());
+    telephony_coordinator->start();
+    telephony_diagnostics = std::make_unique<TelephonyDiagnostics>(context, adc_sampler.get(), ch1817_driver.get(), line_state_detector.get(), telephony_coordinator.get());
 
     GpioManager gpio_mgr(registry, reserved_gpio);
     gpio_mgr.start(context->timeout_ms);
 
-    WebServer web_server(registry, config_mgr, gpio_mgr, context, adc_sampler.get(), caller_id_detector.get(), ch1817_driver.get(), reserved_gpio);
+    WebServer web_server(registry, config_mgr, gpio_mgr, context, adc_sampler.get(), caller_id_detector.get(), ch1817_driver.get(), line_state_detector.get(), telephony_coordinator.get(), telephony_diagnostics.get(), reserved_gpio);
     
     std::cout << "=====================================================" << std::endl;
     std::cout << "Starting Modular CM4 GPIO" << (adc_config.enabled ? " + ADC (" + adc_config.adc_source + ")" : " Full-Control")
@@ -441,6 +454,8 @@ int main(int argc, char* argv[]) {
 
     web_server.listen(listen_host, listen_port);
 
+    if (telephony_coordinator) telephony_coordinator->stop();
+    if (line_state_detector) line_state_detector->stop();
     if (caller_id_detector) caller_id_detector->stop();
     if (ch1817_driver) ch1817_driver->stop();
     if (adc_sampler) adc_sampler->stop();

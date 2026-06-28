@@ -126,10 +126,10 @@ bool configureTtyRaw(int fd) {
 
 // ─── AdcSampler implementation ─────────────────────────────────────────────
 
-AdcSampler::AdcSampler() : AdcSampler(Config()) {}
+AdcSampler::AdcSampler() : AdcSampler(Config(), nullptr) {}
 
-AdcSampler::AdcSampler(Config config)
-    : config_(std::move(config)) {
+AdcSampler::AdcSampler(Config config, std::shared_ptr<SharedSignalBuffer> signal_buffer)
+    : config_(std::move(config)), signal_buffer_(std::move(signal_buffer)) {
     const size_t n = std::max<size_t>(1, config_.history_samples);
     ring_[0].assign(n, 0);
     ring_[1].assign(n, 0);
@@ -257,6 +257,12 @@ void AdcSampler::pushFrameLocked(uint16_t ch0, uint16_t ch1,
     ring_[1][write_index_] = ch1;
     write_index_ = (write_index_ + 1) % ring_[0].size();
     valid_samples_ = std::min(valid_samples_ + 1, ring_[0].size());
+    
+    if (signal_buffer_) {
+        float normalized_ch0 = (static_cast<float>(ch0) / 2047.5f) - 1.0f;
+        signal_buffer_->push(normalized_ch0);
+    }
+
     latest_raw_[0] = ch0;
     latest_raw_[1] = ch1;
     total_frames_++;
