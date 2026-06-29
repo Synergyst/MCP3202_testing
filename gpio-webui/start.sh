@@ -22,6 +22,5 @@ exec /root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server \
   --dac-enable \
   --dac-transport rp2040 \
   --dac-rp2040-dev "$RP2040_DEV" \
-  --dac-rate 48000 \
-  --dac-start-raw-a 0 \
-  --dac-start-raw-b 0
+  --dac-start-raw-a 2048 \
+  --dac-start-raw-b 2048
