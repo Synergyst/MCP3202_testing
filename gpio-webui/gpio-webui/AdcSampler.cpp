@@ -185,7 +185,7 @@ bool AdcSampler::sendGwPacketToRp2040(const std::vector<uint8_t>& packet, std::s
         return false;
     }
     if (!device_protocol_active_) {
-        error = "RP2040 device has not announced GWP1 protocol yet";
+        error = "RP2040 device has not announced GWP1 protocol yet; connected firmware appears to be legacy ADC2 or has not emitted GWP1 caps/status. Reflash mcu-adc/build/mcu_adc.uf2.";
         return false;
     }
     size_t sent = 0;
@@ -199,6 +199,28 @@ bool AdcSampler::sendGwPacketToRp2040(const std::vector<uint8_t>& packet, std::s
         return false;
     }
     return true;
+}
+
+bool AdcSampler::waitForGwpProtocol(uint32_t timeout_ms, std::string& error) const {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            if (rp2040_connected_ && device_protocol_active_) {
+                error.clear();
+                return true;
+            }
+            if (rp2040_connected_ && device_protocol_ == "ADC2") {
+                error = "RP2040 is connected but is using legacy ADC2 protocol; reflash modern GWP1 ADC+DAC firmware.";
+            } else if (!rp2040_connected_) {
+                error = "RP2040 device is not connected";
+            } else {
+                error = "Waiting for RP2040 GWP1 protocol announcement";
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
 }
 
 void AdcSampler::setSampleRate(uint32_t rate) {

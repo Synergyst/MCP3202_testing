@@ -101,6 +101,7 @@ public:
     Config config() const;
     void updateConfig(Config new_config);
     bool sendGwPacketToRp2040(const std::vector<uint8_t>& packet, std::string& error);
+    bool waitForGwpProtocol(uint32_t timeout_ms, std::string& error) const;
     AdcScopeData status() const;
     AdcScopeData snapshot(size_t max_points = 1600) const;
     AdcScopeData recent(size_t frames) const;

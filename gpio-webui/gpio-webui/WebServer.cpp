@@ -424,6 +424,10 @@ const char* HTML_UI = R"html(
         .tab-btn.active { background:#00adb5; color:#fff; border-color:#00f5ff; }
         .tab-panel { display:none; width:100%; max-width:1200px; }
         .tab-panel.active { display:block; }
+        .dtmf-pad { display:grid; grid-template-columns: repeat(4, 56px); gap:8px; }
+        .dtmf-pad button { padding:12px 0; font-size:1.05rem; font-weight:bold; border-radius:8px; background:#202a2d; border:1px solid #3d555b; color:#e9feff; cursor:pointer; }
+        .dtmf-pad button:hover { background:#00adb5; color:#fff; }
+        .dtmf-sequence { width: 300px !important; max-width: 80vw; text-align:left !important; font-family: monospace; }
     </style>
 </head>
 <body class="__BODY_CLASS__">
@@ -663,6 +667,34 @@ const char* HTML_UI = R"html(
             <label>Volts B <input type="number" id="dacVoltsB" min="0" step="0.001" value="0"></label>
             <button onclick="writeDacVolts()">Write Volts</button>
             <span class="record-status" id="dacWriteStatus"></span>
+        </div>
+        <div class="config-panel record-panel effects-panel">
+            <div>
+                <div class="pin-title" style="font-size:1.05rem;margin-bottom:8px;">Advanced DTMF Dialer</div>
+                <div class="dtmf-pad" id="dtmfPad">
+                    <button data-dtmf="1">1</button><button data-dtmf="2">2</button><button data-dtmf="3">3</button><button data-dtmf="A">A</button>
+                    <button data-dtmf="4">4</button><button data-dtmf="5">5</button><button data-dtmf="6">6</button><button data-dtmf="B">B</button>
+                    <button data-dtmf="7">7</button><button data-dtmf="8">8</button><button data-dtmf="9">9</button><button data-dtmf="C">C</button>
+                    <button data-dtmf="*">*</button><button data-dtmf="0">0</button><button data-dtmf="#">#</button><button data-dtmf="D">D</button>
+                </div>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:10px; min-width:320px;">
+                <label>Sequence <input class="dtmf-sequence" type="text" id="dtmfSequence" value="" placeholder="18005551212"></label>
+                <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                    <label>Tone <input type="number" id="dtmfToneMs" min="40" max="2000" step="10" value="100"> ms</label>
+                    <label>Gap <input type="number" id="dtmfGapMs" min="0" max="2000" step="10" value="50"> ms</label>
+                    <label>Amplitude <input type="number" id="dtmfAmplitude" min="1" max="2047" step="10" value="1200"></label>
+                    <label>Output <select id="dtmfChannel"><option value="1">CH0/A</option><option value="2">CH1/B</option><option value="3">CH0+CH1</option></select></label>
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button onclick="playDtmf()">Dial Sequence</button>
+                    <button onclick="stopDtmf()">Stop</button>
+                    <button onclick="clearDtmf()">Clear</button>
+                    <button onclick="backspaceDtmf()">Backspace</button>
+                    <span class="record-status" id="dtmfStatus"></span>
+                </div>
+                <span class="record-help">DTMF tones are synthesized on the RP2040 firmware and sent to the MCP4922 DAC; this UI preserves unsaved edits while status polling runs.</span>
+            </div>
         </div>
         <div class="tiny">MCP4922 is a dual 12-bit voltage-output DAC. Writes use 16 SPI clocks: four command bits followed by 12 data bits; SPI is unidirectional and supports modes 0,0 and 1,1. VOUT = VREF * code / 4096 * gain.</div>
     </div>
@@ -1420,6 +1452,44 @@ const char* HTML_UI = R"html(
         }
 
 
+        const dacGuard = makeSettingsGuard(['dacConfigEnabled','dacConfigTransport','dacConfigRp2040Dev','dacConfigRate'], 'dacConfigStatus');
+        const dtmfGuard = makeSettingsGuard(['dtmfSequence','dtmfToneMs','dtmfGapMs','dtmfAmplitude','dtmfChannel'], 'dtmfStatus');
+        function wireDtmfPad() {
+            dtmfGuard.wire();
+            document.querySelectorAll('#dtmfPad button[data-dtmf]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const seq = document.getElementById('dtmfSequence');
+                    seq.value = (seq.value || '') + btn.dataset.dtmf;
+                    dtmfGuard.markDirty();
+                    seq.focus();
+                });
+            });
+        }
+        function dtmfBody() {
+            return {
+                digits: document.getElementById('dtmfSequence').value || '',
+                tone_ms: Math.max(40, Math.min(2000, parseInt(document.getElementById('dtmfToneMs').value || '100', 10))),
+                gap_ms: Math.max(0, Math.min(2000, parseInt(document.getElementById('dtmfGapMs').value || '50', 10))),
+                amplitude: Math.max(1, Math.min(2047, parseInt(document.getElementById('dtmfAmplitude').value || '1200', 10))),
+                channel_mask: parseInt(document.getElementById('dtmfChannel').value || '1', 10)
+            };
+        }
+        async function playDtmf() {
+            dtmfGuard.beginApply();
+            try {
+                const res = await fetch('/api/dac/dtmf/play', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(dtmfBody())});
+                const data = await res.json(); if (!res.ok) throw new Error(data.error || 'failed');
+                dtmfGuard.finishApply('Dialing');
+            } catch (err) { dtmfGuard.failApply(`Failed: ${err.message || err}`); }
+        }
+        async function stopDtmf() {
+            const st = document.getElementById('dtmfStatus'); if (st) st.textContent = 'Stopping...';
+            try { const res = await fetch('/api/dac/dtmf/stop', {method:'POST'}); const data = await res.json(); if(!res.ok) throw new Error(data.error || 'failed'); if (st) st.textContent = 'Stopped'; }
+            catch(err) { if (st) st.textContent = `Failed: ${err.message || err}`; }
+        }
+        function clearDtmf() { document.getElementById('dtmfSequence').value = ''; dtmfGuard.markDirty(); }
+        function backspaceDtmf() { const el=document.getElementById('dtmfSequence'); el.value=(el.value||'').slice(0,-1); dtmfGuard.markDirty(); }
+
         function updateDacUi(data) {
             const dac = data && data.dac;
             const cfg = data && data.dac_config;
@@ -1435,7 +1505,7 @@ const char* HTML_UI = R"html(
             set('dacFrames', dac.frames_written ?? 0);
             set('dacErrors', dac.errors ?? 0);
             set('dacLastError', dac.last_error || '-');
-            if (cfg && !document.getElementById('dacConfigStatus')?.textContent) {
+            if (cfg && dacGuard.shouldFill(false)) {
                 const en = document.getElementById('dacConfigEnabled'); if (en && document.activeElement !== en) en.checked = !!cfg.enabled;
                 const tr = document.getElementById('dacConfigTransport'); if (tr && document.activeElement !== tr) tr.value = cfg.transport || 'native';
                 const dev = document.getElementById('dacConfigRp2040Dev'); if (dev && document.activeElement !== dev) dev.value = cfg.rp2040_dev || '/dev/ttyACM0';
@@ -1445,7 +1515,7 @@ const char* HTML_UI = R"html(
 
         async function applyDacConfig() {
             const st = document.getElementById('dacConfigStatus');
-            st.textContent = 'Applying...';
+            dacGuard.beginApply();
             try {
                 const body = {
                     enabled: document.getElementById('dacConfigEnabled').checked,
@@ -1456,10 +1526,10 @@ const char* HTML_UI = R"html(
                 const res = await fetch('/api/dac/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || 'failed');
-                st.textContent = 'Applied';
+                dacGuard.finishApply('Applied');
                 fetchStatus();
                 setTimeout(() => { if (st.textContent === 'Applied') st.textContent = ''; }, 1500);
-            } catch (err) { st.textContent = `Failed: ${err.message || err}`; }
+            } catch (err) { dacGuard.failApply(`Failed: ${err.message || err}`); }
         }
 
         async function dacControl(action) {
@@ -1521,7 +1591,7 @@ const char* HTML_UI = R"html(
         setInterval(fetchStatus, 250);
         if (ADC_ENABLED) { setInterval(fetchAdcScope, 120); setInterval(fetchCallerId, 1000); setInterval(fetchLineState, 500); }
         setInterval(fetchTelephony, 500); setInterval(fetchTelephonyCoordinator, 500); setInterval(fetchTelephonyDiagnostics, 1500);
-        window.onload = () => { restoreSimpleUiPrefs(); selectTab(loadUiPref('activeTab', 'scope')); fetchStatus(); wireCallerIdTuneDirty(); wireSettingsGuards(); wireAdcConfigDirty(); if (ADC_ENABLED) { loadAudioModules().then(() => fetchAdcScope()); fetchCallerId(); fetchLineState(); } fetchTelephony(); fetchTelephonyCoordinator(); fetchTelephonyDiagnostics(); };
+        window.onload = () => { restoreSimpleUiPrefs(); selectTab(loadUiPref('activeTab', 'scope')); fetchStatus(); wireCallerIdTuneDirty(); wireSettingsGuards(); wireAdcConfigDirty(); dacGuard.wire(); wireDtmfPad(); if (ADC_ENABLED) { loadAudioModules().then(() => fetchAdcScope()); fetchCallerId(); fetchLineState(); } fetchTelephony(); fetchTelephonyCoordinator(); fetchTelephonyDiagnostics(); };
     </script>
 </body>
 </html>
@@ -1731,6 +1801,44 @@ void WebServer::setup_routes() {
             if (!ok) throw std::runtime_error(error.empty() ? "DAC control failed" : error);
             DacOutput::Config cfg = dac_output->config();
             persistDacSettings(config_mgr, cfg);
+            res.set_content(json{{"status", "ok"}, {"dac_status", dacStatusJson(dac_output->status())}}.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"status", "error"}, {"error", e.what()}, {"dac_status", dac_output ? dacStatusJson(dac_output->status()) : json::object()}}.dump(), "application/json");
+        }
+    });
+
+    svr.Post("/api/dac/dtmf/play", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!dac_output) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "DAC output not configured"}}.dump(), "application/json");
+            return;
+        }
+        try {
+            json j = json::parse(req.body.empty() ? "{}" : req.body);
+            std::string digits = j.value("digits", "");
+            uint16_t tone_ms = static_cast<uint16_t>(std::max(40, std::min(2000, j.value("tone_ms", 100))));
+            uint16_t gap_ms = static_cast<uint16_t>(std::max(0, std::min(2000, j.value("gap_ms", 50))));
+            uint16_t amplitude = static_cast<uint16_t>(std::max(1, std::min(2047, j.value("amplitude", 1200))));
+            uint8_t channel_mask = static_cast<uint8_t>(j.value("channel_mask", static_cast<int>(GW_DAC_CHANNEL_A)));
+            std::string error;
+            if (!dac_output->playDtmf(digits, tone_ms, gap_ms, amplitude, channel_mask, error)) throw std::runtime_error(error.empty() ? "DTMF play failed" : error);
+            res.set_content(json{{"status", "ok"}, {"dac_status", dacStatusJson(dac_output->status())}}.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"status", "error"}, {"error", e.what()}, {"dac_status", dac_output ? dacStatusJson(dac_output->status()) : json::object()}}.dump(), "application/json");
+        }
+    });
+
+    svr.Post("/api/dac/dtmf/stop", [this](const httplib::Request&, httplib::Response& res) {
+        if (!dac_output) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "DAC output not configured"}}.dump(), "application/json");
+            return;
+        }
+        try {
+            std::string error;
+            if (!dac_output->stopDtmf(error)) throw std::runtime_error(error.empty() ? "DTMF stop failed" : error);
             res.set_content(json{{"status", "ok"}, {"dac_status", dacStatusJson(dac_output->status())}}.dump(), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;

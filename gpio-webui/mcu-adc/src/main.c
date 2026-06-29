@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include "pico/stdlib.h"
 #include "pico/stdio.h"
@@ -134,6 +135,28 @@ static uint32_t dac_last_frame_ms = 0;
 static uint16_t dac_last_a = 0;
 static uint16_t dac_last_b = 0;
 
+#define DTMF_MAX_DIGITS 64u
+#define DTMF_PHASE_IDLE 0u
+#define DTMF_PHASE_TONE 1u
+#define DTMF_PHASE_GAP  2u
+
+static volatile bool dtmf_active = false;
+static char dtmf_digits[DTMF_MAX_DIGITS];
+static uint8_t dtmf_digit_count = 0;
+static uint8_t dtmf_index = 0;
+static uint8_t dtmf_phase = DTMF_PHASE_IDLE;
+static uint16_t dtmf_tone_ms = 100;
+static uint16_t dtmf_gap_ms = 50;
+static uint16_t dtmf_amplitude = 1200;
+static uint8_t dtmf_channel_mask = GW_DAC_CHANNEL_A;
+static uint32_t dtmf_phase_until_ms = 0;
+static uint32_t dtmf_next_sample_us = 0;
+static uint32_t dtmf_generated_frames = 0;
+static float dtmf_phase_row = 0.0f;
+static float dtmf_phase_col = 0.0f;
+static float dtmf_inc_row = 0.0f;
+static float dtmf_inc_col = 0.0f;
+
 static inline void adc_cs_select(void) { gpio_put(MCU_ADC_PIN_CS, 0); __asm volatile("nop\n nop\n nop\n"); }
 static inline void adc_cs_deselect(void) { gpio_put(MCU_ADC_PIN_CS, 1); sleep_us(1); }
 
@@ -203,7 +226,117 @@ static void mcp4922_write_pair(uint16_t a, uint16_t b) {
     dac_last_frame_ms = to_ms_since_boot(get_absolute_time());
 }
 
+static void write_packet(uint8_t type, uint16_t stream, const void *payload, uint16_t payload_len);
 static void send_event(uint16_t code, uint16_t stream_id, uint32_t value0, uint32_t value1);
+
+static bool dtmf_digit_freqs(char d, float *row, float *col) {
+    if (d >= 'a' && d <= 'd') d = (char)(d - 'a' + 'A');
+    switch (d) {
+        case '1': *row = 697.0f; *col = 1209.0f; return true;
+        case '2': *row = 697.0f; *col = 1336.0f; return true;
+        case '3': *row = 697.0f; *col = 1477.0f; return true;
+        case 'A': *row = 697.0f; *col = 1633.0f; return true;
+        case '4': *row = 770.0f; *col = 1209.0f; return true;
+        case '5': *row = 770.0f; *col = 1336.0f; return true;
+        case '6': *row = 770.0f; *col = 1477.0f; return true;
+        case 'B': *row = 770.0f; *col = 1633.0f; return true;
+        case '7': *row = 852.0f; *col = 1209.0f; return true;
+        case '8': *row = 852.0f; *col = 1336.0f; return true;
+        case '9': *row = 852.0f; *col = 1477.0f; return true;
+        case 'C': *row = 852.0f; *col = 1633.0f; return true;
+        case '*': *row = 941.0f; *col = 1209.0f; return true;
+        case '0': *row = 941.0f; *col = 1336.0f; return true;
+        case '#': *row = 941.0f; *col = 1477.0f; return true;
+        case 'D': *row = 941.0f; *col = 1633.0f; return true;
+        default: return false;
+    }
+}
+
+static void dtmf_prepare_digit(void) {
+    float row = 0.0f, col = 0.0f;
+    if (dtmf_index >= dtmf_digit_count || !dtmf_digit_freqs(dtmf_digits[dtmf_index], &row, &col)) {
+        dtmf_active = false; dtmf_phase = DTMF_PHASE_IDLE; mcp4922_write_pair(0, 0); return;
+    }
+    const float two_pi = 6.2831853071795864769f;
+    uint32_t rate = dac_sample_rate ? dac_sample_rate : MCU_DAC_DEFAULT_RATE_HZ;
+    dtmf_phase_row = 0.0f; dtmf_phase_col = 0.0f;
+    dtmf_inc_row = two_pi * row / (float)rate;
+    dtmf_inc_col = two_pi * col / (float)rate;
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    dtmf_phase = DTMF_PHASE_TONE;
+    dtmf_phase_until_ms = now_ms + dtmf_tone_ms;
+    dtmf_next_sample_us = to_us_since_boot(get_absolute_time());
+}
+
+static void dtmf_stop(void) {
+    dtmf_active = false; dtmf_phase = DTMF_PHASE_IDLE; dtmf_index = 0; dtmf_digit_count = 0;
+    mcp4922_write_pair(0, 0);
+}
+
+static uint16_t dtmf_start(const gw_dtmf_play_payload_t *p) {
+#if !MCU_DAC_ENABLE
+    (void)p; return GW_STATUS_UNSUPPORTED;
+#else
+    if (p->digit_count == 0 || p->digit_count > DTMF_MAX_DIGITS) return GW_STATUS_INVALID_ARGUMENT;
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < p->digit_count && i < DTMF_MAX_DIGITS; ++i) {
+        float r, c;
+        if (dtmf_digit_freqs(p->digits[i], &r, &c)) dtmf_digits[n++] = p->digits[i];
+    }
+    if (!n) return GW_STATUS_INVALID_ARGUMENT;
+    dtmf_digit_count = n; dtmf_index = 0;
+    dtmf_tone_ms = p->tone_ms ? p->tone_ms : 100;
+    dtmf_gap_ms = p->gap_ms ? p->gap_ms : 50;
+    dtmf_amplitude = p->amplitude > 2047 ? 2047 : p->amplitude;
+    dtmf_channel_mask = (p->channel_mask & GW_DAC_CHANNEL_STEREO) ? (p->channel_mask & GW_DAC_CHANNEL_STEREO) : GW_DAC_CHANNEL_A;
+    dtmf_generated_frames = 0; dtmf_active = true;
+    dtmf_prepare_digit();
+    return GW_STATUS_OK;
+#endif
+}
+
+static void dtmf_tick(void) {
+#if MCU_DAC_ENABLE
+    if (!dtmf_active) return;
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    if (dtmf_phase == DTMF_PHASE_TONE && now_ms >= dtmf_phase_until_ms) {
+        mcp4922_write_pair(0, 0);
+        if (dtmf_gap_ms == 0) { dtmf_index++; dtmf_prepare_digit(); return; }
+        dtmf_phase = DTMF_PHASE_GAP; dtmf_phase_until_ms = now_ms + dtmf_gap_ms;
+        return;
+    }
+    if (dtmf_phase == DTMF_PHASE_GAP && now_ms >= dtmf_phase_until_ms) {
+        dtmf_index++;
+        if (dtmf_index >= dtmf_digit_count) { dtmf_stop(); return; }
+        dtmf_prepare_digit(); return;
+    }
+    if (dtmf_phase != DTMF_PHASE_TONE) return;
+    uint32_t now_us = to_us_since_boot(get_absolute_time());
+    uint32_t rate = dac_sample_rate ? dac_sample_rate : MCU_DAC_DEFAULT_RATE_HZ;
+    uint32_t period_us = 1000000u / rate; if (!period_us) period_us = 1;
+    int budget = 8;
+    while ((int32_t)(now_us - dtmf_next_sample_us) >= 0 && budget-- > 0 && dtmf_active && dtmf_phase == DTMF_PHASE_TONE) {
+        float y = (sinf(dtmf_phase_row) + sinf(dtmf_phase_col)) * 0.5f;
+        int32_t centered = 2048 + (int32_t)(y * (float)dtmf_amplitude);
+        if (centered < 0) centered = 0; if (centered > 4095) centered = 4095;
+        uint16_t a = (dtmf_channel_mask & GW_DAC_CHANNEL_A) ? (uint16_t)centered : 0;
+        uint16_t b = (dtmf_channel_mask & GW_DAC_CHANNEL_B) ? (uint16_t)centered : 0;
+        mcp4922_write_pair(a, b);
+        dtmf_phase_row += dtmf_inc_row; if (dtmf_phase_row >= 6.2831853f) dtmf_phase_row -= 6.2831853f;
+        dtmf_phase_col += dtmf_inc_col; if (dtmf_phase_col >= 6.2831853f) dtmf_phase_col -= 6.2831853f;
+        dtmf_next_sample_us += period_us; dtmf_generated_frames++;
+    }
+#endif
+}
+
+static void send_dtmf_status(void) {
+    gw_dtmf_status_payload_t st = {0};
+    st.active = dtmf_active ? 1 : 0; st.channel_mask = dtmf_channel_mask; st.current_index = dtmf_index; st.digit_count = dtmf_digit_count;
+    st.current_digit = (dtmf_index < dtmf_digit_count) ? dtmf_digits[dtmf_index] : 0; st.phase = dtmf_phase;
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time()); st.remaining_ms = (dtmf_phase_until_ms > now_ms) ? (uint16_t)(dtmf_phase_until_ms - now_ms) : 0;
+    st.generated_frames = dtmf_generated_frames;
+    write_packet(GW_MSG_STATUS, GW_STREAM_DAC0, &st, sizeof(st));
+}
 
 static void push_sample(uint16_t ch0, uint16_t ch1) {
     uint32_t w = wr_idx;
@@ -393,6 +526,20 @@ static uint16_t handle_dac_ctrl(const gw_ctrl_req_payload_t *req, const uint8_t 
         send_dac_status();
         return GW_STATUS_OK;
     }
+    if (req->opcode == GW_OP_DAC_DTMF_PLAY) {
+        if (req->arg_len < sizeof(gw_dtmf_play_payload_t)) return GW_STATUS_BAD_REQUEST;
+        gw_dtmf_play_payload_t p; memcpy(&p, args, sizeof(p));
+        return dtmf_start(&p);
+    }
+    if (req->opcode == GW_OP_DAC_DTMF_STOP) {
+        dtmf_stop();
+        send_dtmf_status();
+        return GW_STATUS_OK;
+    }
+    if (req->opcode == GW_OP_DAC_DTMF_STATUS) {
+        send_dtmf_status();
+        return GW_STATUS_OK;
+    }
     return GW_STATUS_UNSUPPORTED;
 #endif
 }
@@ -423,7 +570,7 @@ static void handle_gwp1_packet(uint8_t first_magic_byte) {
     else if (req.opcode == GW_OP_STREAM_STOP) stream_active = false;
     else if (req.opcode == GW_OP_GET_STATUS) { send_status(); }
     else if (req.opcode == GW_OP_GET_CAPS || req.opcode == GW_OP_HELLO) { send_caps(); }
-    else if (req.opcode >= GW_OP_DAC_SET_RATE && req.opcode <= GW_OP_DAC_GET_STATUS) { status = handle_dac_ctrl(&req, args); }
+    else if ((req.opcode >= GW_OP_DAC_SET_RATE && req.opcode <= GW_OP_DAC_GET_STATUS) || (req.opcode >= GW_OP_DAC_DTMF_PLAY && req.opcode <= GW_OP_DAC_DTMF_STATUS)) { status = handle_dac_ctrl(&req, args); }
     else status = GW_STATUS_UNSUPPORTED;
     send_ctrl_resp(req.opcode, req.request_id, status);
 }
@@ -458,6 +605,9 @@ int main(void) {
 #if MCU_DAC_PIN_SHDN >= 0
     gpio_init(MCU_DAC_PIN_SHDN); gpio_set_dir(MCU_DAC_PIN_SHDN, GPIO_OUT); gpio_put(MCU_DAC_PIN_SHDN, 1);
 #endif
+    // Define DAC outputs immediately at boot. This writes active-mode zero to
+    // both MCP4922 input registers; with LDAC tied low, outputs update on CS rise.
+    mcp4922_write_pair(0, 0);
 #endif
     multicore_launch_core1(sampler_core);
     send_caps(); send_status();
@@ -466,6 +616,7 @@ int main(void) {
     while (true) {
         int c = getchar_timeout_us(0); if (c == 'S') handle_ascii_rate(); else if (c == 'G') handle_gwp1_packet((uint8_t)c);
         uint32_t now_ms = to_ms_since_boot(get_absolute_time()); if (now_ms - last_status_ms >= 1000u) { last_status_ms = now_ms; send_status(); }
+        dtmf_tick();
         check_dac_underrun();
         if (ring_available() < MCU_ADC_PACKET_FRAMES) { sleep_ms(1); continue; }
         uint32_t start_seq = rd_seq; uint32_t n = 0; while (n < MCU_ADC_PACKET_FRAMES && pop_pair(&packet_pairs[n])) n++; if (!n) continue;

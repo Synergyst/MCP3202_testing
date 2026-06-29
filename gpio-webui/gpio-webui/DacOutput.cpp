@@ -77,6 +77,13 @@ DacOutput::Status DacOutput::status() const {
 }
 
 bool DacOutput::start(std::string& error) {
+    if (config_.enabled && config_.transport == "rp2040" && adc_sampler_) {
+        if (!adc_sampler_->waitForGwpProtocol(1500, error)) {
+            std::lock_guard<std::mutex> lock(mtx_);
+            noteErrorLocked(error);
+            return false;
+        }
+    }
     std::lock_guard<std::mutex> lock(mtx_);
     if (!config_.enabled) { error = "DAC is disabled"; noteErrorLocked(error); return false; }
     if (config_.transport == "native") {
@@ -155,6 +162,13 @@ bool DacOutput::setFormat(uint8_t channel_count, uint8_t sample_format, std::str
 }
 
 bool DacOutput::writeRawBoth(uint16_t raw_a, uint16_t raw_b, std::string& error) {
+    if (config_.enabled && config_.transport == "rp2040" && adc_sampler_) {
+        if (!adc_sampler_->waitForGwpProtocol(1500, error)) {
+            std::lock_guard<std::mutex> lock(mtx_);
+            noteErrorLocked(error);
+            return false;
+        }
+    }
     std::lock_guard<std::mutex> lock(mtx_);
     if (!config_.enabled) { error = "DAC is disabled"; noteErrorLocked(error); return false; }
     raw_a = clampRaw12(raw_a);
@@ -182,6 +196,44 @@ bool DacOutput::writeRawBoth(uint16_t raw_a, uint16_t raw_b, std::string& error)
 
 bool DacOutput::writeVoltsBoth(double volts_a, double volts_b, std::string& error) {
     return writeRawBoth(voltsToRawA(volts_a), voltsToRawB(volts_b), error);
+}
+
+bool DacOutput::playDtmf(const std::string& digits, uint16_t tone_ms, uint16_t gap_ms, uint16_t amplitude, uint8_t channel_mask, std::string& error) {
+    if (config_.enabled && config_.transport == "rp2040" && adc_sampler_) {
+        if (!adc_sampler_->waitForGwpProtocol(1500, error)) {
+            std::lock_guard<std::mutex> lock(mtx_);
+            noteErrorLocked(error);
+            return false;
+        }
+    }
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!config_.enabled) { error = "DAC is disabled"; noteErrorLocked(error); return false; }
+    if (config_.transport != "rp2040") { error = "DTMF generation is implemented on RP2040 firmware only"; noteErrorLocked(error); return false; }
+    gw_dtmf_play_payload_t p{};
+    p.tone_ms = tone_ms ? tone_ms : 100;
+    p.gap_ms = gap_ms;
+    p.amplitude = std::min<uint16_t>(amplitude, 2047);
+    p.channel_mask = (channel_mask & GW_DAC_CHANNEL_STEREO) ? (channel_mask & GW_DAC_CHANNEL_STEREO) : GW_DAC_CHANNEL_A;
+    for (char c : digits) {
+        if (p.digit_count >= sizeof(p.digits)) break;
+        if ((c >= '0' && c <= '9') || c == '*' || c == '#' || (c >= 'A' && c <= 'D') || (c >= 'a' && c <= 'd')) {
+            p.digits[p.digit_count++] = c;
+        }
+    }
+    if (p.digit_count == 0) { error = "DTMF digit sequence is empty"; noteErrorLocked(error); return false; }
+    if (!sendMcuControl(GW_OP_DAC_DTMF_PLAY, &p, sizeof(p), error)) { noteErrorLocked(error); return false; }
+    active_ = true;
+    last_error_.clear();
+    return true;
+}
+
+bool DacOutput::stopDtmf(std::string& error) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!config_.enabled) { error = "DAC is disabled"; noteErrorLocked(error); return false; }
+    if (config_.transport != "rp2040") { error = "DTMF generation is implemented on RP2040 firmware only"; noteErrorLocked(error); return false; }
+    if (!sendMcuControl(GW_OP_DAC_DTMF_STOP, nullptr, 0, error)) { noteErrorLocked(error); return false; }
+    last_error_.clear();
+    return true;
 }
 
 bool DacOutput::sendMcuControl(uint16_t opcode, const void* args, uint16_t arg_len, std::string& error) {

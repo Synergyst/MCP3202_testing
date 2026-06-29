@@ -2,6 +2,7 @@
 #include <map>
 #include <memory>
 #include <thread>
+#include <chrono>
 #include <set>
 #include <string>
 #include <vector>
@@ -75,6 +76,11 @@ void printUsage(const char* argv0, std::ostream& os) {
        << "  --dac-disable                      Disable MCP4922 DAC and persist dac_enabled=false\n"
        << "  --dac-transport MODE               DAC transport: native or rp2040 (default native)\n"
        << "  --dac-rp2040-dev PATH              RP2040 USB device for MCU DAC mode (default ADC RP2040 path)\n"
+       << "  --dac-rate HZ                      DAC sample/playback rate metadata (default 48000)\n"
+       << "  --dac-autostart                    Start DAC and write default raw values at server startup (default)\n"
+       << "  --no-autostart-dac                 Do not initialize/write DAC at server startup\n"
+       << "  --dac-start-raw-a N                Startup raw code for DAC A, 0..4095 (default 0)\n"
+       << "  --dac-start-raw-b N                Startup raw code for DAC B, 0..4095 (default 0)\n"
        << "  --dac-bitbang                      Use GPIO bit-banged SPI for MCP4922\n"
        << "  --dac-hw-spi                       Use Linux spidev hardware SPI for MCP4922 (default)\n"
        << "  --dac-spi-dev PATH                 DAC spidev node (default /dev/spidev0.1)\n"
@@ -303,6 +309,9 @@ int main(int argc, char* argv[]) {
     DacOutput::Config dac_output_config;
     MCP4922::Config& dac_config = dac_output_config.native;
     bool dac_cli_touched = false;
+    bool dac_autostart = true;
+    uint16_t dac_start_raw_a = 0;
+    uint16_t dac_start_raw_b = 0;
 
     // Load saved settings from config file before parsing CLI overrides
     ConfigManager temp_cfg_mgr(context->config_path);
@@ -322,6 +331,11 @@ int main(int argc, char* argv[]) {
         dac_output_config.rp2040_dev = temp_cfg_mgr.getSetting("dac_rp2040_dev", adc_config.rp2040_dev);
         std::string dac_rate_saved = temp_cfg_mgr.getSetting("dac_sample_rate_hz", "");
         if (!dac_rate_saved.empty()) dac_output_config.sample_rate_hz = parseUInt32Strict(dac_rate_saved, "dac_sample_rate_hz");
+        dac_autostart = parseBoolStrict(temp_cfg_mgr.getSetting("dac_autostart", "true"), "dac_autostart");
+        std::string dac_start_a_saved = temp_cfg_mgr.getSetting("dac_start_raw_a", "");
+        if (!dac_start_a_saved.empty()) { int v = parseIntStrict(dac_start_a_saved, "dac_start_raw_a"); if (v < 0 || v > 4095) throw std::runtime_error("dac_start_raw_a must be 0..4095"); dac_start_raw_a = static_cast<uint16_t>(v); }
+        std::string dac_start_b_saved = temp_cfg_mgr.getSetting("dac_start_raw_b", "");
+        if (!dac_start_b_saved.empty()) { int v = parseIntStrict(dac_start_b_saved, "dac_start_raw_b"); if (v < 0 || v > 4095) throw std::runtime_error("dac_start_raw_b must be 0..4095"); dac_start_raw_b = static_cast<uint16_t>(v); }
         dac_config.bitbang = parseBoolStrict(temp_cfg_mgr.getSetting("dac_bitbang", "false"), "dac_bitbang");
         dac_config.device = temp_cfg_mgr.getSetting("dac_spi_dev", dac_config.device);
         std::string s;
@@ -435,6 +449,26 @@ int main(int argc, char* argv[]) {
                 dac_cli_touched = true;
             } else if (arg == "--dac-rp2040-dev") {
                 dac_output_config.rp2040_dev = requireValue(i, argc, argv, arg);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-rate") {
+                dac_output_config.sample_rate_hz = parseUInt32Strict(requireValue(i, argc, argv, arg), arg);
+                if (dac_output_config.sample_rate_hz > 1000000) throw std::runtime_error("--dac-rate must be 1..1000000");
+                dac_cli_touched = true;
+            } else if (arg == "--dac-autostart") {
+                dac_autostart = true;
+                dac_cli_touched = true;
+            } else if (arg == "--no-autostart-dac") {
+                dac_autostart = false;
+                dac_cli_touched = true;
+            } else if (arg == "--dac-start-raw-a") {
+                int v = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                if (v < 0 || v > 4095) throw std::runtime_error("--dac-start-raw-a must be 0..4095");
+                dac_start_raw_a = static_cast<uint16_t>(v);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-start-raw-b") {
+                int v = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                if (v < 0 || v > 4095) throw std::runtime_error("--dac-start-raw-b must be 0..4095");
+                dac_start_raw_b = static_cast<uint16_t>(v);
                 dac_cli_touched = true;
             } else if (arg == "--dac-bitbang") {
                 dac_config.bitbang = true;
@@ -564,6 +598,9 @@ int main(int argc, char* argv[]) {
     ConfigManager config_mgr(context->config_path);
     if (dac_cli_touched) {
         persistDacConfig(config_mgr, dac_output_config);
+        config_mgr.setSetting("dac_autostart", dac_autostart ? "true" : "false");
+        config_mgr.setSetting("dac_start_raw_a", std::to_string(dac_start_raw_a));
+        config_mgr.setSetting("dac_start_raw_b", std::to_string(dac_start_raw_b));
         std::cout << "[DAC] Persisted MCP4922 DAC settings to " << context->config_path << std::endl;
     }
     int loaded_timeout = 5000;
@@ -591,6 +628,27 @@ int main(int argc, char* argv[]) {
     }
 
     dac_output = std::make_unique<DacOutput>(dac_output_config, (dac_output_config.transport == "rp2040" ? adc_sampler.get() : nullptr));
+
+    if (dac_output_config.enabled && dac_autostart) {
+        std::string dac_error;
+        bool dac_ok = false;
+        const int attempts = (dac_output_config.transport == "rp2040") ? 50 : 1;
+        for (int attempt = 0; attempt < attempts; ++attempt) {
+            dac_error.clear();
+            if (dac_output->start(dac_error) && dac_output->writeRawBoth(dac_start_raw_a, dac_start_raw_b, dac_error)) {
+                dac_ok = true;
+                break;
+            }
+            if (dac_output_config.transport == "rp2040") std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (dac_ok) {
+            std::cout << "[DAC] Autostart wrote raw A=" << dac_start_raw_a << " B=" << dac_start_raw_b << std::endl;
+        } else {
+            std::cerr << "[DAC] Autostart failed: " << (dac_error.empty() ? std::string("unknown error") : dac_error) << std::endl;
+        }
+    } else if (dac_output_config.enabled) {
+        std::cout << "[DAC] Autostart disabled; DAC will remain at POR/existing value until user write." << std::endl;
+    }
 
     if (ch1817_driver) ch1817_driver->start();
     if (adc_sampler) {
@@ -624,7 +682,10 @@ int main(int argc, char* argv[]) {
                   << ", VREF B " << dac_config.channel[1].vref
                   << ", gain A " << (dac_config.channel[0].gain_1x ? "1x" : "2x")
                   << ", gain B " << (dac_config.channel[1].gain_1x ? "1x" : "2x")
-                  << ", RP2040 device " << dac_output_config.rp2040_dev << std::endl;
+                  << ", RP2040 device " << dac_output_config.rp2040_dev
+                  << ", autostart " << (dac_autostart ? "on" : "off")
+                  << ", start raw A " << dac_start_raw_a
+                  << ", start raw B " << dac_start_raw_b << std::endl;
     } else {
         std::cout << "DAC: disabled" << std::endl;
     }

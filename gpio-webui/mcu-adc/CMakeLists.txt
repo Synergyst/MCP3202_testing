@@ -49,6 +49,7 @@ target_link_libraries(mcu_adc
     pico_stdlib
     pico_multicore
     hardware_spi
+    m
 )
 
 pico_enable_stdio_usb(mcu_adc 1)

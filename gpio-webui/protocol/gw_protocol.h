@@ -97,7 +97,10 @@ typedef enum {
     GW_OP_DAC_STREAM_STOP   = 0x0104,
     GW_OP_DAC_FLUSH         = 0x0105,
     GW_OP_DAC_WRITE_BLOCK   = 0x0106,
-    GW_OP_DAC_GET_STATUS    = 0x0107
+    GW_OP_DAC_GET_STATUS    = 0x0107,
+    GW_OP_DAC_DTMF_PLAY     = 0x0110,
+    GW_OP_DAC_DTMF_STOP     = 0x0111,
+    GW_OP_DAC_DTMF_STATUS   = 0x0112
 } gw_opcode_t;
 
 typedef enum {
@@ -110,6 +113,12 @@ typedef enum {
     GW_EVENT_DAC_FLUSHED     = 101,
     GW_EVENT_DRIVER_FAULT    = 200
 } gw_event_code_t;
+
+typedef enum {
+    GW_DAC_CHANNEL_A      = 0x01,
+    GW_DAC_CHANNEL_B      = 0x02,
+    GW_DAC_CHANNEL_STEREO = 0x03
+} gw_dac_channel_mask_t;
 
 typedef enum {
     GW_FLAG_NONE       = 0x00,
@@ -200,6 +209,26 @@ typedef struct GW_PACKED {
 } gw_time_sync_payload_t;
 
 typedef struct GW_PACKED {
+    uint16_t tone_ms;
+    uint16_t gap_ms;
+    uint16_t amplitude;      /* 0..4095 peak code offset around midscale */
+    uint8_t  channel_mask;   /* gw_dac_channel_mask_t */
+    uint8_t  digit_count;
+    char     digits[64];     /* ASCII 0-9,*,#,A-D,a-d; not required to be NUL-terminated */
+} gw_dtmf_play_payload_t;
+
+typedef struct GW_PACKED {
+    uint8_t  active;
+    uint8_t  channel_mask;
+    uint8_t  current_index;
+    uint8_t  digit_count;
+    char     current_digit;
+    uint8_t  phase;          /* 0 idle, 1 tone, 2 gap */
+    uint16_t remaining_ms;
+    uint32_t generated_frames;
+} gw_dtmf_status_payload_t;
+
+typedef struct GW_PACKED {
     uint32_t protocol_version;
     uint32_t firmware_version;
     uint32_t device_class_mask;
@@ -228,6 +257,8 @@ static_assert(sizeof(gw_format_payload_t) == 4, "gw_format_payload_t must be 4 b
 static_assert(sizeof(gw_ctrl_req_payload_t) == 8, "gw_ctrl_req_payload_t must be 8 bytes");
 static_assert(sizeof(gw_ctrl_resp_payload_t) == 8, "gw_ctrl_resp_payload_t must be 8 bytes");
 static_assert(sizeof(gw_time_sync_payload_t) == 12, "gw_time_sync_payload_t must be 12 bytes");
+static_assert(sizeof(gw_dtmf_play_payload_t) == 72, "gw_dtmf_play_payload_t must be 72 bytes");
+static_assert(sizeof(gw_dtmf_status_payload_t) == 12, "gw_dtmf_status_payload_t must be 12 bytes");
 #endif
 
 #ifdef __cplusplus

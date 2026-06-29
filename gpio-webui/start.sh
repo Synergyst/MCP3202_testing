@@ -1,10 +1,27 @@
 #!/bin/bash
+set -euo pipefail
 
 cd /root/mcp-adc/gpio-webui/
 
-/root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server --gpio-phys 11 --adc-max-buffer-mb 256 --adc-history-ms 60000 --adc-realtime --adc-rt-priority 20 --adc-cpu 3
-#/root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server --gpio-phys 11 --adc-source rp2040 --adc-rate 16000 --adc-max-buffer-mb 256 --adc-history-ms 60000
-#/root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server --adc-hw-spi --adc-rate 8000 --spi-speed 1800000 --spi-dev /dev/spidev0.0 --adc-cs-bcm 8 --gpio-phys 11 --adc-realtime --adc-rt-priority 99 --adc-cpu 3
-#/root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server --adc-hw-spi --adc-rate 22050 --spi-speed 1800000 --spi-dev /dev/spidev0.0 --adc-cs-bcm 8 --gpio-phys 11,15,32,36,37,38,40 --adc-realtime --adc-rt-priority 20 --adc-cpu 3
-# Experimental only if the ADC CS wire is truly on SPI0 CE0 and hardware CS returns valid non-zero samples:
-#/root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server --adc-hw-spi --adc-rate 3600 --spi-speed 1800000 --spi-dev /dev/spidev0.0 --adc-cs-bcm -1 --gpio-phys 11 --adc-realtime --adc-rt-priority 20 --adc-cpu 3
+# Target hardware wiring:
+#   RPi CM4 GPIO: CH1817 RI/OH only (no ADC/DAC on CM4 GPIO)
+#   RP2040 MCU: MCP3202 ADC on SPI0 GP0..GP3, MCP4922 DAC on SPI1 GP13..GP15
+#   ADC/DAC control/data over the same RP2040 USB CDC device.
+#
+# Use a stable /dev/serial/by-id path here if available; /dev/ttyACM1 is the
+# currently observed device on this host.
+RP2040_DEV="${RP2040_DEV:-/dev/ttyACM0}"
+
+exec /root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server \
+  --gpio-phys 11 \
+  --adc-source rp2040 \
+  --adc-rp2040-dev "$RP2040_DEV" \
+  --adc-rate 16000 \
+  --adc-max-buffer-mb 256 \
+  --adc-history-ms 60000 \
+  --dac-enable \
+  --dac-transport rp2040 \
+  --dac-rp2040-dev "$RP2040_DEV" \
+  --dac-rate 48000 \
+  --dac-start-raw-a 0 \
+  --dac-start-raw-b 0
