@@ -52,6 +52,15 @@ struct AdcScopeData {
     uint32_t rp2040_firmware_flags = 0;
     std::string rp2040_dev;
     uint32_t rp2040_declared_rate_hz = 0;
+    // Generic GWP1/device diagnostics (RP2040 fields above are preserved for API compatibility)
+    bool device_protocol_active = false;
+    std::string device_protocol = "ADC2";
+    std::string device_transport;
+    uint16_t device_adc_stream_id = 1;
+    uint8_t device_channel_count = 2;
+    std::string device_sample_format = "U16_LE";
+    uint32_t device_caps_max_rate_hz = 0;
+    uint32_t device_caps_formats = 0;
 
     size_t valid_samples = 0;
     size_t history_capacity_samples = 0;
@@ -91,6 +100,7 @@ public:
     bool isEnabled() const;
     Config config() const;
     void updateConfig(Config new_config);
+    bool sendGwPacketToRp2040(const std::vector<uint8_t>& packet, std::string& error);
     AdcScopeData status() const;
     AdcScopeData snapshot(size_t max_points = 1600) const;
     AdcScopeData recent(size_t frames) const;
@@ -153,6 +163,16 @@ private:
     uint32_t rp2040_last_seq_ = 0;
     int rp2040_fd_ = -1;
     uint32_t rp2040_pending_rate_hz_ = 0;
+    bool device_protocol_active_ = false;
+    std::string device_protocol_ = "ADC2";
+    std::string device_transport_;
+    uint16_t device_adc_stream_id_ = 1;
+    uint8_t device_channel_count_ = 2;
+    uint8_t device_sample_format_ = 3;
+    uint32_t device_caps_max_rate_hz_ = 0;
+    uint32_t device_caps_formats_ = 0;
+    uint32_t gw_packet_seq_ = 1;
+    uint16_t gw_request_id_ = 1;
 
     std::atomic<bool> running_{false};
     std::thread worker_;

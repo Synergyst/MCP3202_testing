@@ -8,6 +8,7 @@
 #include "GpioManager.hpp"
 #include "SystemContext.hpp"
 #include "AdcSampler.hpp"
+#include "DacOutput.hpp"
 #include "CallerIdDetector.hpp"
 #include "Ch1817Driver.hpp"
 #include "LineStateDetector.hpp"
@@ -21,6 +22,7 @@ public:
               GpioManager& gpio,
               std::shared_ptr<SystemContext> context,
               AdcSampler* adc_sampler = nullptr,
+              DacOutput* dac_output = nullptr,
               CallerIdDetector* caller_id_detector = nullptr,
               Ch1817Driver* ch1817_driver = nullptr,
               LineStateDetector* line_state_detector = nullptr,
@@ -44,6 +46,7 @@ private:
     GpioManager& gpio_mgr;
     std::shared_ptr<SystemContext> context;
     AdcSampler* adc_sampler;
+    DacOutput* dac_output;
     CallerIdDetector* caller_id_detector;
     Ch1817Driver* ch1817_driver;
     LineStateDetector* line_state_detector;

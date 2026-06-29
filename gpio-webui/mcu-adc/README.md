@@ -1,8 +1,10 @@
-# RP2040 MCP3202 ADC Frontend
+# RP2040 MCP3202 ADC Frontend + MCP4922 DAC Sink
 
-This project contains RP2040 firmware that turns a Pico/RP2040-Zero into a deterministic USB ADC frontend for the `gpio-webui` / `cm4_gpio_server` application.
+This project contains RP2040 firmware that turns a Pico/RP2040-Zero into a deterministic USB ADC frontend and an optional MCP4922 DAC sink for the `gpio-webui` / `cm4_gpio_server` application.
 
 The RP2040 samples both MCP3202 channels using SPI, packetizes the samples with sequence numbers and CRC32, and streams them to the CM4 over USB CDC. The host server can use this stream as an ADC source via `adc_source = rp2040`, replacing Linux userspace SPI timing with MCU-side sampling.
+
+The same USB CDC link now also speaks GWP1 DAC control/data packets. A host can stream or write immediate values to an MCP4922 attached to the RP2040, matching the project model where analog I/O can be either native Pi SPI or MCU-over-USB.
 
 ## Current status
 
@@ -15,6 +17,8 @@ Implemented and validated:
 - CRC32 packet validation on host.
 - Sequence-gap and firmware lost-frame diagnostics.
 - Runtime sample-rate command from host to RP2040.
+- GWP1 capabilities/status/control packets.
+- MCU-side MCP4922 DAC backend with GWP1 set-rate, set-format, write-frame, write-block/DATA, start, stop, flush, status, underrun, and capability reporting.
 - Host ADC backend selected with `--adc-source rp2040` or persisted config.
 - Web UI ADC source/rate/device controls.
 - Web UI RP2040 diagnostics.
@@ -24,7 +28,7 @@ Implemented and validated:
 
 ## Default hardware wiring
 
-Default firmware pins use RP2040 `spi0`:
+Default ADC firmware pins use RP2040 `spi0`:
 
 | MCP3202 pin | Function | RP2040 default |
 |---|---|---|
@@ -37,7 +41,23 @@ Default firmware pins use RP2040 `spi0`:
 | 7 CLK | SPI clock | GPIO2 / SPI0 SCK |
 | 8 VDD/VREF | Power/reference | 3V3 |
 
-Also connect CM4, RP2040, and MCP3202 grounds together.
+Default DAC firmware pins use RP2040 `spi1`:
+
+| MCP4922 pin | Function | RP2040 default |
+|---|---|---|
+| 1 VDD | Supply | 3V3 |
+| 3 CS | Chip select | GPIO13 |
+| 4 SCK | SPI clock | GPIO14 / SPI1 SCK |
+| 5 SDI | SPI data into DAC | GPIO15 / SPI1 TX |
+| 8 LDAC | Output latch | Tie low, or configure `MCU_DAC_PIN_LDAC` |
+| 9 SHDN | Hardware shutdown | Tie high, or configure `MCU_DAC_PIN_SHDN` |
+| 10 VOUTB | DAC B output | Analog output B |
+| 11 VREFB | DAC B reference | External VREF / 3V3 as appropriate |
+| 12 VSS | Ground | GND |
+| 13 VREFA | DAC A reference | External VREF / 3V3 as appropriate |
+| 14 VOUTA | DAC A output | Analog output A |
+
+The MCP4922 has no MISO pin. Also connect CM4, RP2040, MCP3202, and MCP4922 grounds together.
 
 Recommended analog-side basics:
 
@@ -60,16 +80,46 @@ MCU_ADC_PIN_SCK=2
 MCU_ADC_PIN_MOSI=3
 MCU_ADC_PACKET_FRAMES=128
 MCU_ADC_RING_FRAMES=4096
+
+MCU_DAC_ENABLE=1
+MCU_DAC_SPI_BAUD=10000000
+MCU_DAC_SPI_PORT=1
+MCU_DAC_PIN_CS=13
+MCU_DAC_PIN_SCK=14
+MCU_DAC_PIN_MOSI=15
+MCU_DAC_PIN_LDAC=-1
+MCU_DAC_PIN_SHDN=-1
+MCU_DAC_DEFAULT_RATE_HZ=48000
+MCU_DAC_MAX_RATE_HZ=100000
 ```
 
 Notes:
 
 - `MCU_ADC_PACKET_FRAMES=128` is the tested packet size.
 - `MCU_ADC_RING_FRAMES=4096` is the tested firmware ring size.
-- Runtime sample-rate changes are sent by the host as `S<rate>\n` over the same USB CDC interface.
-- Valid firmware command range is `1..100000`, but tested production rates should be limited to `8000`, `16000`, and `24000` unless firmware timing is further optimized.
+- Runtime ADC sample-rate changes are sent by the host as `S<rate>\n` over the same USB CDC interface.
+- Valid ADC firmware command range is `1..100000`, but tested production rates should be limited to `8000`, `16000`, and `24000` unless firmware timing is further optimized.
+- DAC support can be compiled out with `MCU_DAC_ENABLE=0`.
+- DAC GWP1 `DATA` packets are accepted on stream `GW_STREAM_DAC0` only after `GW_OP_DAC_STREAM_START`.
 
 ## USB packet protocol
+
+The current firmware emits GWP1 packets and accepts GWP1 control/DAC packets. All numeric fields are little-endian.
+
+GWP1 is documented in `../protocol/PROTOCOL.md`. DAC control supports:
+
+- `GW_OP_DAC_SET_RATE`
+- `GW_OP_DAC_SET_FORMAT`
+- `GW_OP_DAC_WRITE_FRAME`
+- `GW_OP_DAC_WRITE_BLOCK`
+- `GW_OP_DAC_STREAM_START`
+- `GW_OP_DAC_STREAM_STOP`
+- `GW_OP_DAC_FLUSH`
+- `GW_OP_DAC_GET_STATUS`
+
+DAC block payloads use `gw_dac_data_payload_t` followed by interleaved samples. For `GW_SAMPLE_U16_LE`, each channel is a little-endian 16-bit value and only the low 12 bits are sent to the MCP4922.
+
+### Legacy ADC2 packet protocol
 
 All numeric fields are little-endian.
 

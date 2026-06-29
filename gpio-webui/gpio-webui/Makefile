@@ -16,11 +16,11 @@ DSP_TEST = dsp_selftest
 LINE_STATE_TEST = line_state_selftest
 TELCO_TEST = telephony_coordinator_selftest
 TELDIAG_TEST = telephony_diagnostics_selftest
-OBJS = main.o ConfigManager.o GpioManager.o WebServer.o MCP3202.o AdcSampler.o AudioProcessing.o CallerIdDetector.o Ch1817Driver.o SignalProcessing.o LineStateDetector.o TelephonyCoordinator.o TelephonyDiagnostics.o
+OBJS = main.o ConfigManager.o GpioManager.o WebServer.o MCP3202.o MCP4922.o DacOutput.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o AudioProcessing.o CallerIdDetector.o Ch1817Driver.o SignalProcessing.o LineStateDetector.o TelephonyCoordinator.o TelephonyDiagnostics.o
 DSP_TEST_OBJS = dsp_selftest.o SignalProcessing.o
-LINE_STATE_TEST_OBJS = line_state_selftest.o LineStateDetector.o SignalProcessing.o AdcSampler.o MCP3202.o Ch1817Driver.o
-TELCO_TEST_OBJS = telephony_coordinator_selftest.o TelephonyCoordinator.o LineStateDetector.o SignalProcessing.o AdcSampler.o MCP3202.o Ch1817Driver.o CallerIdDetector.o
-TELDIAG_TEST_OBJS = telephony_diagnostics_selftest.o TelephonyDiagnostics.o TelephonyCoordinator.o LineStateDetector.o SignalProcessing.o AdcSampler.o MCP3202.o Ch1817Driver.o CallerIdDetector.o
+LINE_STATE_TEST_OBJS = line_state_selftest.o LineStateDetector.o SignalProcessing.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o MCP3202.o Ch1817Driver.o
+TELCO_TEST_OBJS = telephony_coordinator_selftest.o TelephonyCoordinator.o LineStateDetector.o SignalProcessing.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o MCP3202.o Ch1817Driver.o CallerIdDetector.o
+TELDIAG_TEST_OBJS = telephony_diagnostics_selftest.o TelephonyDiagnostics.o TelephonyCoordinator.o LineStateDetector.o SignalProcessing.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o MCP3202.o Ch1817Driver.o CallerIdDetector.o
 
 all: rnnoise-status $(TARGET) $(DSP_TEST) $(LINE_STATE_TEST) $(TELCO_TEST) $(TELDIAG_TEST)
 
@@ -46,7 +46,7 @@ $(TELCO_TEST): $(TELCO_TEST_OBJS)
 $(TELDIAG_TEST): $(TELDIAG_TEST_OBJS)
 	$(CXX) $(CXXFLAGS) -I. -o $(TELDIAG_TEST) $(TELDIAG_TEST_OBJS) $(LDFLAGS)
 
-main.o: main.cpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp WebServer.hpp SystemContext.hpp SharedSignalBuffer.hpp AdcSampler.hpp MCP3202.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp HeaderPins.hpp httplib.h
+main.o: main.cpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp WebServer.hpp SystemContext.hpp SharedSignalBuffer.hpp AdcSampler.hpp MCP3202.hpp MCP4922.hpp DacOutput.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp HeaderPins.hpp httplib.h
 	$(CXX) $(CXXFLAGS) -I. -c main.cpp -o main.o
 
 ConfigManager.o: ConfigManager.cpp ConfigManager.hpp PinConfig.hpp
@@ -58,8 +58,23 @@ GpioManager.o: GpioManager.cpp GpioManager.hpp PinConfig.hpp
 MCP3202.o: MCP3202.cpp MCP3202.hpp
 	$(CXX) $(CXXFLAGS) -I. -c MCP3202.cpp -o MCP3202.o
 
-AdcSampler.o: AdcSampler.cpp AdcSampler.hpp MCP3202.hpp SharedSignalBuffer.hpp
+MCP4922.o: MCP4922.cpp MCP4922.hpp
+	$(CXX) $(CXXFLAGS) -I. -c MCP4922.cpp -o MCP4922.o
+
+DacOutput.o: DacOutput.cpp DacOutput.hpp MCP4922.hpp AdcSampler.hpp GwProtocol.hpp GwTransport.hpp ../protocol/gw_protocol.h
+	$(CXX) $(CXXFLAGS) -I. -c DacOutput.cpp -o DacOutput.o
+
+AdcSampler.o: AdcSampler.cpp AdcSampler.hpp MCP3202.hpp SharedSignalBuffer.hpp GwProtocol.hpp ../protocol/gw_protocol.h
 	$(CXX) $(CXXFLAGS) -I. -c AdcSampler.cpp -o AdcSampler.o
+
+GwProtocol.o: GwProtocol.cpp GwProtocol.hpp ../protocol/gw_protocol.h
+	$(CXX) $(CXXFLAGS) -I. -c GwProtocol.cpp -o GwProtocol.o
+
+GwTransport.o: GwTransport.cpp GwTransport.hpp
+	$(CXX) $(CXXFLAGS) -I. -c GwTransport.cpp -o GwTransport.o
+
+GwDevice.o: GwDevice.cpp GwDevice.hpp GwProtocol.hpp ../protocol/gw_protocol.h
+	$(CXX) $(CXXFLAGS) -I. -c GwDevice.cpp -o GwDevice.o
 
 AudioProcessing.o: AudioProcessing.cpp AudioProcessing.hpp
 	$(CXX) $(CXXFLAGS) -I. -c AudioProcessing.cpp -o AudioProcessing.o
@@ -94,7 +109,7 @@ telephony_coordinator_selftest.o: telephony_coordinator_selftest.cpp TelephonyCo
 telephony_diagnostics_selftest.o: telephony_diagnostics_selftest.cpp TelephonyDiagnostics.hpp
 	$(CXX) $(CXXFLAGS) -I. -c telephony_diagnostics_selftest.cpp -o telephony_diagnostics_selftest.o
 
-WebServer.o: WebServer.cpp WebServer.hpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp SystemContext.hpp AdcSampler.hpp MCP3202.hpp AudioProcessing.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp SharedSignalBuffer.hpp httplib.h
+WebServer.o: WebServer.cpp WebServer.hpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp SystemContext.hpp AdcSampler.hpp DacOutput.hpp MCP3202.hpp MCP4922.hpp AudioProcessing.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp SharedSignalBuffer.hpp httplib.h
 	$(CXX) $(CXXFLAGS) -I. -c WebServer.cpp -o WebServer.o
 
 clean:

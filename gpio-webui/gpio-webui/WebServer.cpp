@@ -71,6 +71,111 @@ std::set<int> adcReservedPinsForConfig(const AdcSampler::Config& cfg) {
     return pins;
 }
 
+
+std::set<int> dacReservedPinsForConfig(const DacOutput::Config& cfg) {
+    std::set<int> pins;
+    if (!cfg.enabled || cfg.transport != "native") return pins;
+    const auto& dac = cfg.native;
+    pins.insert(dac.clk_bcm);
+    pins.insert(dac.mosi_bcm);
+    if (dac.cs_bcm >= 0) pins.insert(dac.cs_bcm);
+    if (dac.ldac_bcm >= 0) pins.insert(dac.ldac_bcm);
+    if (dac.shdn_bcm >= 0) pins.insert(dac.shdn_bcm);
+    if (!dac.bitbang) {
+        if (dac.device.find("spidev0.1") != std::string::npos) pins.insert(7);
+        else if (dac.device.find("spidev0.0") != std::string::npos) pins.insert(8);
+    }
+    return pins;
+}
+
+void persistDacSettings(ConfigManager& cfg, const DacOutput::Config& out) {
+    const auto& dac = out.native;
+    cfg.setSetting("dac_enabled", out.enabled ? "true" : "false");
+    cfg.setSetting("dac_transport", out.transport);
+    cfg.setSetting("dac_rp2040_dev", out.rp2040_dev);
+    cfg.setSetting("dac_sample_rate_hz", std::to_string(out.sample_rate_hz));
+    cfg.setSetting("dac_channel_count", std::to_string(out.channel_count));
+    cfg.setSetting("dac_sample_format", std::to_string(out.sample_format));
+    cfg.setSetting("dac_bitbang", dac.bitbang ? "true" : "false");
+    cfg.setSetting("dac_spi_dev", dac.device);
+    cfg.setSetting("dac_spi_speed_hz", std::to_string(dac.speed_hz));
+    cfg.setSetting("dac_cs_bcm", std::to_string(dac.cs_bcm));
+    cfg.setSetting("dac_clk_bcm", std::to_string(dac.clk_bcm));
+    cfg.setSetting("dac_mosi_bcm", std::to_string(dac.mosi_bcm));
+    cfg.setSetting("dac_ldac_bcm", std::to_string(dac.ldac_bcm));
+    cfg.setSetting("dac_shdn_bcm", std::to_string(dac.shdn_bcm));
+    cfg.setSetting("dac_vref_a", std::to_string(dac.channel[0].vref));
+    cfg.setSetting("dac_vref_b", std::to_string(dac.channel[1].vref));
+    cfg.setSetting("dac_gain_a", dac.channel[0].gain_1x ? "1" : "2");
+    cfg.setSetting("dac_gain_b", dac.channel[1].gain_1x ? "1" : "2");
+    cfg.setSetting("dac_buffered_a", dac.channel[0].buffered_vref ? "true" : "false");
+    cfg.setSetting("dac_buffered_b", dac.channel[1].buffered_vref ? "true" : "false");
+}
+
+json dacStatusJson(const DacOutput::Status& s) {
+    return {
+        {"enabled", s.enabled}, {"active", s.active}, {"healthy", s.healthy},
+        {"native_open", s.native_open}, {"mcu_connected", s.mcu_connected},
+        {"transport", s.transport}, {"rp2040_dev", s.rp2040_dev},
+        {"sample_rate_hz", s.sample_rate_hz}, {"channel_count", s.channel_count},
+        {"sample_format", s.sample_format}, {"raw_a", s.raw_a}, {"raw_b", s.raw_b},
+        {"volts_a", s.volts_a}, {"volts_b", s.volts_b},
+        {"frames_written", s.frames_written}, {"packets_sent", s.packets_sent},
+        {"errors", s.errors}, {"last_error", s.last_error}
+    };
+}
+
+json dacConfigJson(const DacOutput::Config& c) {
+    const auto& d = c.native;
+    return {
+        {"enabled", c.enabled}, {"transport", c.transport}, {"rp2040_dev", c.rp2040_dev},
+        {"sample_rate_hz", c.sample_rate_hz}, {"channel_count", c.channel_count},
+        {"sample_format", c.sample_format}, {"bitbang", d.bitbang}, {"spi_dev", d.device},
+        {"spi_speed_hz", d.speed_hz}, {"cs_bcm", d.cs_bcm}, {"clk_bcm", d.clk_bcm},
+        {"mosi_bcm", d.mosi_bcm}, {"ldac_bcm", d.ldac_bcm}, {"shdn_bcm", d.shdn_bcm},
+        {"vref_a", d.channel[0].vref}, {"vref_b", d.channel[1].vref},
+        {"gain_a", d.channel[0].gain_1x ? 1 : 2}, {"gain_b", d.channel[1].gain_1x ? 1 : 2},
+        {"buffered_a", d.channel[0].buffered_vref}, {"buffered_b", d.channel[1].buffered_vref}
+    };
+}
+
+DacOutput::Config dacConfigFromJson(const json& j, DacOutput::Config cfg) {
+    auto& d = cfg.native;
+    if (j.contains("enabled")) cfg.enabled = j.at("enabled").get<bool>();
+    if (j.contains("transport")) cfg.transport = j.at("transport").get<std::string>();
+    if (cfg.transport != "native" && cfg.transport != "rp2040") throw std::runtime_error("dac transport must be native or rp2040");
+    if (j.contains("rp2040_dev")) cfg.rp2040_dev = j.at("rp2040_dev").get<std::string>();
+    if (j.contains("sample_rate_hz")) cfg.sample_rate_hz = j.at("sample_rate_hz").get<uint32_t>();
+    if (j.contains("channel_count")) cfg.channel_count = j.at("channel_count").get<uint8_t>();
+    if (j.contains("sample_format")) {
+        if (j.at("sample_format").is_string()) {
+            std::string sf = j.at("sample_format").get<std::string>();
+            cfg.sample_format = (sf == "PACKED_U12_LE" || sf == "packed_u12") ? GW_SAMPLE_PACKED_U12_LE : GW_SAMPLE_U16_LE;
+        } else cfg.sample_format = j.at("sample_format").get<uint8_t>();
+    }
+    if (j.contains("bitbang")) d.bitbang = j.at("bitbang").get<bool>();
+    if (j.contains("spi_dev")) d.device = j.at("spi_dev").get<std::string>();
+    if (j.contains("spi_speed_hz")) d.speed_hz = j.at("spi_speed_hz").get<uint32_t>();
+    if (j.contains("cs_bcm")) d.cs_bcm = j.at("cs_bcm").get<int>();
+    if (j.contains("clk_bcm")) d.clk_bcm = j.at("clk_bcm").get<int>();
+    if (j.contains("mosi_bcm")) d.mosi_bcm = j.at("mosi_bcm").get<int>();
+    if (j.contains("ldac_bcm")) d.ldac_bcm = j.at("ldac_bcm").get<int>();
+    if (j.contains("shdn_bcm")) d.shdn_bcm = j.at("shdn_bcm").get<int>();
+    if (j.contains("vref")) { double v = j.at("vref").get<double>(); d.channel[0].vref = v; d.channel[1].vref = v; }
+    if (j.contains("vref_a")) d.channel[0].vref = j.at("vref_a").get<double>();
+    if (j.contains("vref_b")) d.channel[1].vref = j.at("vref_b").get<double>();
+    if (j.contains("gain_a")) d.channel[0].gain_1x = j.at("gain_a").get<int>() == 1;
+    if (j.contains("gain_b")) d.channel[1].gain_1x = j.at("gain_b").get<int>() == 1;
+    if (j.contains("buffered_a")) d.channel[0].buffered_vref = j.at("buffered_a").get<bool>();
+    if (j.contains("buffered_b")) d.channel[1].buffered_vref = j.at("buffered_b").get<bool>();
+    if (cfg.sample_rate_hz == 0 || cfg.sample_rate_hz > 1000000) throw std::runtime_error("dac sample_rate_hz must be 1..1000000");
+    if (cfg.channel_count < 1 || cfg.channel_count > 2) throw std::runtime_error("dac channel_count must be 1 or 2");
+    if (cfg.sample_format != GW_SAMPLE_U16_LE && cfg.sample_format != GW_SAMPLE_PACKED_U12_LE) throw std::runtime_error("unsupported DAC sample_format");
+    if (d.channel[0].vref <= 0.0 || d.channel[1].vref <= 0.0) throw std::runtime_error("dac vref values must be positive");
+    d.enabled = cfg.enabled && cfg.transport == "native";
+    return cfg;
+}
+
 std::vector<std::string> splitEffectsCsv(const std::string& csv) {
     std::vector<std::string> out;
     std::stringstream ss(csv);
@@ -334,6 +439,7 @@ const char* HTML_UI = R"html(
         <button class="tab-btn active" data-tab="scope" onclick="selectTab('scope')">Scope / Audio</button>
         <button class="tab-btn" data-tab="caller" onclick="selectTab('caller')">Caller ID</button>
         <button class="tab-btn" data-tab="telephony" onclick="selectTab('telephony')">Telephony</button>
+        <button class="tab-btn" data-tab="dac" onclick="selectTab('dac')">DAC</button>
         <button class="tab-btn" data-tab="gpio" onclick="selectTab('gpio')">GPIO</button>
     </div>
 
@@ -524,6 +630,44 @@ const char* HTML_UI = R"html(
     </div>
     </div>
 
+
+    <div class="tab-panel" id="tab-dac">
+    <div class="card cid-card" id="dacCard">
+        <div class="card-header"><div><span class="pin-title">MCP4922 DAC Output</span><span class="bcm-tag">native SPI or RP2040/GWP1</span></div><span class="status-pill" id="dacStatusPill">-</span></div>
+        <div class="cid-grid">
+            <div class="cid-item">Enabled<b id="dacEnabled">-</b></div>
+            <div class="cid-item">Transport<b id="dacTransportStatus">-</b></div>
+            <div class="cid-item">Active<b id="dacActive">-</b></div>
+            <div class="cid-item">Raw A/B<b id="dacRaw">-</b></div>
+            <div class="cid-item">Volts A/B<b id="dacVolts">-</b></div>
+            <div class="cid-item">Frames Written<b id="dacFrames">-</b></div>
+            <div class="cid-item">Errors<b id="dacErrors">-</b></div>
+            <div class="cid-item">Last Error<b id="dacLastError">-</b></div>
+        </div>
+        <div class="config-panel record-panel">
+            <label><input type="checkbox" id="dacConfigEnabled"> enabled</label>
+            <label>Transport <select id="dacConfigTransport"><option value="native">Native Pi SPI</option><option value="rp2040">RP2040 USB/GWP1</option></select></label>
+            <label>RP2040 dev <input class="wide" type="text" id="dacConfigRp2040Dev" value="/dev/ttyACM0"></label>
+            <label>Rate <input type="number" id="dacConfigRate" min="1" max="1000000" value="48000"></label>
+            <button onclick="applyDacConfig()">Apply DAC Config</button>
+            <button onclick="dacControl('start')">Start</button>
+            <button onclick="dacControl('stop')">Stop</button>
+            <button onclick="dacControl('flush')">Flush/Zero</button>
+            <span class="record-status" id="dacConfigStatus"></span>
+        </div>
+        <div class="config-panel record-panel">
+            <label>Raw A <input type="number" id="dacRawA" min="0" max="4095" value="0"></label>
+            <label>Raw B <input type="number" id="dacRawB" min="0" max="4095" value="0"></label>
+            <button onclick="writeDacRaw()">Write Raw</button>
+            <label>Volts A <input type="number" id="dacVoltsA" min="0" step="0.001" value="0"></label>
+            <label>Volts B <input type="number" id="dacVoltsB" min="0" step="0.001" value="0"></label>
+            <button onclick="writeDacVolts()">Write Volts</button>
+            <span class="record-status" id="dacWriteStatus"></span>
+        </div>
+        <div class="tiny">MCP4922 is a dual 12-bit voltage-output DAC. Writes use 16 SPI clocks: four command bits followed by 12 data bits; SPI is unidirectional and supports modes 0,0 and 1,1. VOUT = VREF * code / 4096 * gain.</div>
+    </div>
+    </div>
+
     <div class="tab-panel" id="tab-gpio">
     <div class="grid" id="pinGrid"></div>
     </div>
@@ -594,6 +738,7 @@ const char* HTML_UI = R"html(
                 if (Date.now() > timeoutInputLockExpiration && document.activeElement !== timeoutInput) {
                     timeoutInput.value = data.timeout_ms;
                 }
+                updateDacUi(data);
 
                 for (const pinId in data.pins) {
                     const pin = data.pins[pinId];
@@ -986,7 +1131,7 @@ const char* HTML_UI = R"html(
                 const ok = data.healthy && data.rp2040_connected && crc === 0 && gaps === 0 && lost === 0 && flags === 0;
                 const warn = data.rp2040_connected && !ok;
                 el.className = `adc-diag ${ok ? 'ok' : (warn ? 'warn' : 'bad')}`;
-                el.textContent = `RP2040: ${data.rp2040_connected ? 'connected' : 'disconnected'} | device ${data.rp2040_dev || '-'} | packets ${data.rp2040_packets_ok || 0} | crc ${crc} | gaps ${gaps} | fw lost ${lost} | flags ${formatHexFlags(flags)} | firmware ${data.rp2040_declared_rate_hz || 0} Hz`;
+                el.textContent = `Device: ${data.rp2040_connected ? 'connected' : 'disconnected'} | protocol ${data.device_protocol || 'ADC2'} | transport ${data.device_transport || data.rp2040_dev || '-'} | stream ${data.device_adc_stream_id || 1} | format ${data.device_sample_format || 'U16_LE'} x${data.device_channel_count || 2} | packets ${data.rp2040_packets_ok || 0} | crc ${crc} | gaps ${gaps} | lost ${lost} | flags ${formatHexFlags(flags)} | firmware ${data.rp2040_declared_rate_hz || 0} Hz`;
             } else {
                 el.className = `adc-diag ${data.healthy ? 'ok' : 'bad'}`;
                 el.textContent = `MCP3202/Linux SPI: ${data.healthy ? 'streaming' : 'not healthy'} | scheduler ${data.scheduler_status || 'normal'} | overruns ${data.overruns || 0} | max overrun ${data.max_overrun_us || 0} us`;
@@ -1274,6 +1419,88 @@ const char* HTML_UI = R"html(
             }
         }
 
+
+        function updateDacUi(data) {
+            const dac = data && data.dac;
+            const cfg = data && data.dac_config;
+            if (!dac) return;
+            const pill = document.getElementById('dacStatusPill');
+            if (pill) { pill.textContent = dac.enabled ? (dac.healthy ? 'OK' : 'WARN') : 'DISABLED'; pill.className = `status-pill ${dac.enabled && dac.healthy ? 'status-ok' : 'status-bad'}`; }
+            const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+            set('dacEnabled', dac.enabled ? 'yes' : 'no');
+            set('dacTransportStatus', dac.transport || '-');
+            set('dacActive', dac.active ? 'yes' : 'no');
+            set('dacRaw', `${dac.raw_a ?? 0} / ${dac.raw_b ?? 0}`);
+            set('dacVolts', `${Number(dac.volts_a || 0).toFixed(4)} / ${Number(dac.volts_b || 0).toFixed(4)} V`);
+            set('dacFrames', dac.frames_written ?? 0);
+            set('dacErrors', dac.errors ?? 0);
+            set('dacLastError', dac.last_error || '-');
+            if (cfg && !document.getElementById('dacConfigStatus')?.textContent) {
+                const en = document.getElementById('dacConfigEnabled'); if (en && document.activeElement !== en) en.checked = !!cfg.enabled;
+                const tr = document.getElementById('dacConfigTransport'); if (tr && document.activeElement !== tr) tr.value = cfg.transport || 'native';
+                const dev = document.getElementById('dacConfigRp2040Dev'); if (dev && document.activeElement !== dev) dev.value = cfg.rp2040_dev || '/dev/ttyACM0';
+                const rate = document.getElementById('dacConfigRate'); if (rate && document.activeElement !== rate) rate.value = cfg.sample_rate_hz || 48000;
+            }
+        }
+
+        async function applyDacConfig() {
+            const st = document.getElementById('dacConfigStatus');
+            st.textContent = 'Applying...';
+            try {
+                const body = {
+                    enabled: document.getElementById('dacConfigEnabled').checked,
+                    transport: document.getElementById('dacConfigTransport').value,
+                    rp2040_dev: document.getElementById('dacConfigRp2040Dev').value,
+                    sample_rate_hz: parseInt(document.getElementById('dacConfigRate').value || '48000', 10)
+                };
+                const res = await fetch('/api/dac/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'failed');
+                st.textContent = 'Applied';
+                fetchStatus();
+                setTimeout(() => { if (st.textContent === 'Applied') st.textContent = ''; }, 1500);
+            } catch (err) { st.textContent = `Failed: ${err.message || err}`; }
+        }
+
+        async function dacControl(action) {
+            const st = document.getElementById('dacConfigStatus');
+            st.textContent = `${action}...`;
+            try {
+                const res = await fetch('/api/dac/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action})});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'failed');
+                st.textContent = 'OK';
+                fetchStatus();
+                setTimeout(() => { if (st.textContent === 'OK') st.textContent = ''; }, 1500);
+            } catch (err) { st.textContent = `Failed: ${err.message || err}`; }
+        }
+
+        async function writeDacRaw() {
+            const st = document.getElementById('dacWriteStatus');
+            st.textContent = 'Writing...';
+            try {
+                const body = {raw_a: parseInt(document.getElementById('dacRawA').value || '0', 10), raw_b: parseInt(document.getElementById('dacRawB').value || '0', 10)};
+                const res = await fetch('/api/dac/write', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'failed');
+                st.textContent = 'Written';
+                fetchStatus();
+            } catch (err) { st.textContent = `Failed: ${err.message || err}`; }
+        }
+
+        async function writeDacVolts() {
+            const st = document.getElementById('dacWriteStatus');
+            st.textContent = 'Writing...';
+            try {
+                const body = {volts_a: parseFloat(document.getElementById('dacVoltsA').value || '0'), volts_b: parseFloat(document.getElementById('dacVoltsB').value || '0')};
+                const res = await fetch('/api/dac/write', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'failed');
+                st.textContent = 'Written';
+                fetchStatus();
+            } catch (err) { st.textContent = `Failed: ${err.message || err}`; }
+        }
+
         async function updateTimeout() {
             const val = document.getElementById('timeoutInput').value;
             const params = new URLSearchParams();
@@ -1300,8 +1527,8 @@ const char* HTML_UI = R"html(
 </html>
 )html";
 
-WebServer::WebServer(std::map<int, std::shared_ptr<PinState>>& reg, ConfigManager& cfg, GpioManager& gpio, std::shared_ptr<SystemContext> ctx, AdcSampler* adc, CallerIdDetector* cid, Ch1817Driver* ch1817, LineStateDetector* line_state, TelephonyCoordinator* telco, TelephonyDiagnostics* tel_diag, std::set<int> reserved) 
-    : registry(reg), config_mgr(cfg), gpio_mgr(gpio), context(ctx), adc_sampler(adc), caller_id_detector(cid), ch1817_driver(ch1817), line_state_detector(line_state), telephony_coordinator(telco), telephony_diagnostics(tel_diag), reserved_bcm_pins(std::move(reserved)) {
+WebServer::WebServer(std::map<int, std::shared_ptr<PinState>>& reg, ConfigManager& cfg, GpioManager& gpio, std::shared_ptr<SystemContext> ctx, AdcSampler* adc, DacOutput* dac, CallerIdDetector* cid, Ch1817Driver* ch1817, LineStateDetector* line_state, TelephonyCoordinator* telco, TelephonyDiagnostics* tel_diag, std::set<int> reserved) 
+    : registry(reg), config_mgr(cfg), gpio_mgr(gpio), context(ctx), adc_sampler(adc), dac_output(dac), caller_id_detector(cid), ch1817_driver(ch1817), line_state_detector(line_state), telephony_coordinator(telco), telephony_diagnostics(tel_diag), reserved_bcm_pins(std::move(reserved)) {
     setup_routes();
 }
 
@@ -1365,6 +1592,10 @@ void WebServer::setup_routes() {
             adc_sampler->updateConfig(cfg);
 
             std::set<int> new_reserved = adcReservedPinsForConfig(cfg);
+            if (dac_output) {
+                std::set<int> dac_pins = dacReservedPinsForConfig(dac_output->config());
+                new_reserved.insert(dac_pins.begin(), dac_pins.end());
+            }
             if (ch1817_driver && ch1817_driver->settings().enabled) {
                 new_reserved.insert(ch1817_driver->offhookBcm());
                 new_reserved.insert(ch1817_driver->riBcm());
@@ -1406,6 +1637,105 @@ void WebServer::setup_routes() {
         std::string view = req.has_param("view") ? req.get_param_value("view") : "raw";
         std::string effects = req.has_param("effects") ? req.get_param_value("effects") : "";
         res.set_content(serialize_adc_scope(points, view, effects), "application/json");
+    });
+
+
+    svr.Get("/api/dac", [this](const httplib::Request&, httplib::Response& res) {
+        if (!dac_output) {
+            res.status = 404;
+            res.set_content(json{{"enabled", false}, {"error", "DAC output not configured"}}.dump(), "application/json");
+            return;
+        }
+        res.set_content(json{{"config", dacConfigJson(dac_output->config())}, {"status", dacStatusJson(dac_output->status())}}.dump(), "application/json");
+    });
+
+    svr.Get("/api/dac/status", [this](const httplib::Request&, httplib::Response& res) {
+        if (!dac_output) {
+            res.status = 404;
+            res.set_content(json{{"enabled", false}, {"error", "DAC output not configured"}}.dump(), "application/json");
+            return;
+        }
+        res.set_content(dacStatusJson(dac_output->status()).dump(), "application/json");
+    });
+
+    svr.Post("/api/dac/config", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!dac_output) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "DAC output not configured"}}.dump(), "application/json");
+            return;
+        }
+        try {
+            json j = json::parse(req.body.empty() ? "{}" : req.body);
+            DacOutput::Config cfg = dacConfigFromJson(j, dac_output->config());
+            dac_output->updateConfig(cfg);
+            persistDacSettings(config_mgr, cfg);
+            std::set<int> new_reserved;
+            if (adc_sampler) new_reserved = adcReservedPinsForConfig(adc_sampler->config());
+            std::set<int> dac_pins = dacReservedPinsForConfig(cfg);
+            new_reserved.insert(dac_pins.begin(), dac_pins.end());
+            if (ch1817_driver && ch1817_driver->settings().enabled) {
+                new_reserved.insert(ch1817_driver->offhookBcm());
+                new_reserved.insert(ch1817_driver->riBcm());
+            }
+            reserved_bcm_pins = std::move(new_reserved);
+            res.set_content(json{{"status", "ok"}, {"config", dacConfigJson(cfg)}, {"dac_status", dacStatusJson(dac_output->status())}}.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"status", "error"}, {"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
+    svr.Post("/api/dac/write", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!dac_output) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "DAC output not configured"}}.dump(), "application/json");
+            return;
+        }
+        try {
+            json j = json::parse(req.body.empty() ? "{}" : req.body);
+            std::string error;
+            bool ok = false;
+            if (j.contains("volts_a") || j.contains("volts_b")) {
+                double va = j.value("volts_a", 0.0);
+                double vb = j.value("volts_b", va);
+                ok = dac_output->writeVoltsBoth(va, vb, error);
+            } else {
+                uint16_t ra = static_cast<uint16_t>(j.value("raw_a", j.value("raw", 0)));
+                uint16_t rb = static_cast<uint16_t>(j.value("raw_b", j.value("raw", static_cast<int>(ra))));
+                ok = dac_output->writeRawBoth(ra, rb, error);
+            }
+            if (!ok) throw std::runtime_error(error.empty() ? "DAC write failed" : error);
+            res.set_content(json{{"status", "ok"}, {"dac_status", dacStatusJson(dac_output->status())}}.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"status", "error"}, {"error", e.what()}, {"dac_status", dac_output ? dacStatusJson(dac_output->status()) : json::object()}}.dump(), "application/json");
+        }
+    });
+
+    svr.Post("/api/dac/control", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!dac_output) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "DAC output not configured"}}.dump(), "application/json");
+            return;
+        }
+        try {
+            json j = json::parse(req.body.empty() ? "{}" : req.body);
+            std::string action = j.value("action", "");
+            std::string error;
+            bool ok = false;
+            if (action == "start") ok = dac_output->start(error);
+            else if (action == "stop") ok = dac_output->stop(error);
+            else if (action == "flush") ok = dac_output->flush(error);
+            else if (action == "set_rate") ok = dac_output->setRate(j.at("sample_rate_hz").get<uint32_t>(), error);
+            else throw std::runtime_error("Unsupported DAC control action");
+            if (!ok) throw std::runtime_error(error.empty() ? "DAC control failed" : error);
+            DacOutput::Config cfg = dac_output->config();
+            persistDacSettings(config_mgr, cfg);
+            res.set_content(json{{"status", "ok"}, {"dac_status", dacStatusJson(dac_output->status())}}.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"status", "error"}, {"error", e.what()}, {"dac_status", dac_output ? dacStatusJson(dac_output->status()) : json::object()}}.dump(), "application/json");
+        }
     });
 
     svr.Get("/api/caller-id", [this](const httplib::Request&, httplib::Response& res) {
@@ -1635,6 +1965,12 @@ void WebServer::setup_routes() {
 std::string WebServer::serialize_state() {
     json j;
     j["timeout_ms"] = context->timeout_ms.load();
+    if (dac_output) {
+        j["dac"] = dacStatusJson(dac_output->status());
+        j["dac_config"] = dacConfigJson(dac_output->config());
+    } else {
+        j["dac"] = {{"enabled", false}, {"healthy", false}, {"last_error", "DAC output not configured"}};
+    }
     j["pins"] = json::object();
 
     for (const auto& [phys, pin] : registry) {
@@ -1704,6 +2040,14 @@ std::string WebServer::serialize_adc_scope(size_t max_points, const std::string&
     j["rp2040_firmware_flags"] = s.rp2040_firmware_flags;
     j["rp2040_dev"] = s.rp2040_dev;
     j["rp2040_declared_rate_hz"] = s.rp2040_declared_rate_hz;
+    j["device_protocol_active"] = s.device_protocol_active;
+    j["device_protocol"] = s.device_protocol;
+    j["device_transport"] = s.device_transport;
+    j["device_adc_stream_id"] = s.device_adc_stream_id;
+    j["device_channel_count"] = s.device_channel_count;
+    j["device_sample_format"] = s.device_sample_format;
+    j["device_caps_max_rate_hz"] = s.device_caps_max_rate_hz;
+    j["device_caps_formats"] = s.device_caps_formats;
     j["history_capacity_samples"] = s.history_capacity_samples;
     j["available_history_ms"] = (static_cast<uint64_t>(s.valid_samples) * 1000ull) / std::max<uint32_t>(1, sr);
     j["history_capacity_ms"] = (static_cast<uint64_t>(s.history_capacity_samples) * 1000ull) / std::max<uint32_t>(1, sr);

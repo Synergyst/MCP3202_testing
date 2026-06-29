@@ -80,4 +80,5 @@ CMakeFiles/mcu_adc.dir/src/main.c.o: \
  /root/pico/pico-sdk/src/common/pico_sync/include/pico/critical_section.h \
  /root/pico/pico-sdk/src/rp2_common/hardware_spi/include/hardware/spi.h \
  /root/pico/pico-sdk/src/rp2040/hardware_structs/include/hardware/structs/spi.h \
- /root/pico/pico-sdk/src/rp2040/hardware_regs/include/hardware/regs/spi.h
+ /root/pico/pico-sdk/src/rp2040/hardware_regs/include/hardware/regs/spi.h \
+ /root/mcp-adc/gpio-webui/mcu-adc/src/../../protocol/gw_protocol.h

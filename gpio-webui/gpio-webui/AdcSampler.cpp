@@ -1,4 +1,5 @@
 #include "AdcSampler.hpp"
+#include "GwProtocol.hpp"
 
 #include <algorithm>
 #include <array>
@@ -57,11 +58,12 @@ void sleepUntilMonotonicNs(int64_t target_ns, int64_t spin_ns,
         cpuRelax();
 }
 
-// ─── RP2040 binary protocol helpers ────────────────────────────────────────
+// ─── RP2040/GWP binary protocol helpers ────────────────────────────────────
 
 // Packet magic: 'ADC2' little-endian = 0x32434441
 constexpr uint32_t RP2040_MAGIC   = 0x32434441u;
 constexpr uint16_t RP2040_VERSION = 1u;
+constexpr uint32_t GWP_MAGIC = GW_MAGIC;
 
 struct __attribute__((packed)) Rp2040Header {
     uint32_t magic;
@@ -148,6 +150,19 @@ bool AdcSampler::sendRp2040RateCommandLocked(int fd, uint32_t rate, std::string&
         error = "RP2040 rate update deferred: device is not connected";
         return false;
     }
+    if (device_protocol_active_) {
+        const std::vector<uint8_t> pkt = gw::encodeSetSampleRate(rate, gw_request_id_++, gw_packet_seq_++);
+        size_t sent_bin = 0;
+        while (sent_bin < pkt.size()) {
+            ssize_t rc = ::write(fd, pkt.data() + sent_bin, pkt.size() - sent_bin);
+            if (rc > 0) { sent_bin += static_cast<size_t>(rc); continue; }
+            if (rc < 0 && errno == EINTR) continue;
+            error = "Failed to write binary rate command to device: " + std::string(std::strerror(errno));
+            return false;
+        }
+        return true;
+    }
+
     const std::string cmd = "S" + std::to_string(rate) + "\n";
     size_t sent = 0;
     while (sent < cmd.size()) {
@@ -158,6 +173,29 @@ bool AdcSampler::sendRp2040RateCommandLocked(int fd, uint32_t rate, std::string&
         }
         if (rc < 0 && errno == EINTR) continue;
         error = "Failed to write rate command to RP2040: " + std::string(std::strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+bool AdcSampler::sendGwPacketToRp2040(const std::vector<uint8_t>& packet, std::string& error) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (rp2040_fd_ < 0 || !rp2040_connected_) {
+        error = "RP2040 device is not connected";
+        return false;
+    }
+    if (!device_protocol_active_) {
+        error = "RP2040 device has not announced GWP1 protocol yet";
+        return false;
+    }
+    size_t sent = 0;
+    while (sent < packet.size()) {
+        ssize_t rc = ::write(rp2040_fd_, packet.data() + sent, packet.size() - sent);
+        if (rc > 0) { sent += static_cast<size_t>(rc); continue; }
+        if (rc < 0 && errno == EINTR) continue;
+        if (rc < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; }
+        error = "Failed to write GWP1 packet to RP2040: " + std::string(std::strerror(errno));
+        last_error_ = error;
         return false;
     }
     return true;
@@ -218,6 +256,16 @@ void AdcSampler::updateConfig(Config new_config) {
         rp2040_last_seq_ = 0;
         rp2040_fd_ = -1;
         rp2040_pending_rate_hz_ = (config_.adc_source == "rp2040") ? config_.sample_rate_hz : 0;
+        device_protocol_active_ = false;
+        device_protocol_ = "ADC2";
+        device_transport_.clear();
+        device_adc_stream_id_ = GW_STREAM_ADC0;
+        device_channel_count_ = 2;
+        device_sample_format_ = GW_SAMPLE_U16_LE;
+        device_caps_max_rate_hz_ = 0;
+        device_caps_formats_ = 0;
+        gw_packet_seq_ = 1;
+        gw_request_id_ = 1;
     }
     start();
     if (config_.adc_source == "rp2040") {
@@ -472,7 +520,7 @@ void AdcSampler::workerRp2040() {
                                    | (static_cast<uint32_t>(window[1]) << 8)
                                    | (static_cast<uint32_t>(window[2]) << 16)
                                    | (static_cast<uint32_t>(window[3]) << 24);
-                    if (magic == RP2040_MAGIC) break;
+                    if (magic == RP2040_MAGIC || magic == GWP_MAGIC) break;
                     continue;
                 }
                 if (rc == 0 || errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -484,6 +532,104 @@ void AdcSampler::workerRp2040() {
                 goto reconnect;
             }
             if (!running_) break;
+
+            uint32_t synced_magic = static_cast<uint32_t>(window[0])
+                                  | (static_cast<uint32_t>(window[1]) << 8)
+                                  | (static_cast<uint32_t>(window[2]) << 16)
+                                  | (static_cast<uint32_t>(window[3]) << 24);
+
+            if (synced_magic == GWP_MAGIC) {
+                gw_header_t gh{};
+                std::memcpy(&gh, window.data(), 4);
+                if (!readExact(fd, reinterpret_cast<uint8_t*>(&gh) + 4, sizeof(gh) - 4, running_)) {
+                    reconnect_reason = "GWP read failed while receiving packet header";
+                    goto reconnect;
+                }
+                if (gh.magic != GWP_MAGIC || gh.version != GW_VERSION || gh.header_len != sizeof(gw_header_t) || gh.payload_len > GW_MAX_PAYLOAD_LEN) {
+                    std::lock_guard<std::mutex> lock(mtx_);
+                    healthy_ = false;
+                    last_error_ = "GWP invalid header";
+                    window_fill = 0;
+                    continue;
+                }
+                std::vector<uint8_t> payload(gh.payload_len);
+                if (!payload.empty() && !readExact(fd, payload.data(), payload.size(), running_)) {
+                    reconnect_reason = "GWP read failed while receiving packet payload";
+                    goto reconnect;
+                }
+                uint32_t pkt_crc = 0;
+                if (!readExact(fd, reinterpret_cast<uint8_t*>(&pkt_crc), sizeof(pkt_crc), running_)) {
+                    reconnect_reason = "GWP read failed while receiving packet CRC";
+                    goto reconnect;
+                }
+                uint32_t calc = 0;
+                calc = crc32Update(calc, reinterpret_cast<const uint8_t*>(&gh), sizeof(gh));
+                if (!payload.empty()) calc = crc32Update(calc, payload.data(), payload.size());
+                {
+                    std::lock_guard<std::mutex> lock(mtx_);
+                    device_protocol_active_ = true;
+                    device_protocol_ = "GWP1";
+                    device_transport_ = "tty:" + device;
+                    if (calc != pkt_crc) {
+                        rp2040_packets_crc_bad_++;
+                        healthy_ = false;
+                        last_error_ = "GWP packet CRC mismatch";
+                        window_fill = 0;
+                        continue;
+                    }
+                    rp2040_packets_ok_++;
+                    if (gh.msg_type == GW_MSG_DATA && payload.size() >= sizeof(gw_adc_data_payload_t)) {
+                        gw_adc_data_payload_t ap{};
+                        std::memcpy(&ap, payload.data(), sizeof(ap));
+                        device_adc_stream_id_ = gh.stream_id;
+                        device_channel_count_ = ap.channel_count;
+                        device_sample_format_ = ap.sample_format;
+                        if (ap.channel_count == 2 && ap.sample_format == GW_SAMPLE_U16_LE) {
+                            const size_t sample_bytes = static_cast<size_t>(ap.frame_count) * 2u * sizeof(uint16_t);
+                            if (payload.size() >= sizeof(ap) + sample_bytes) {
+                                bool sequence_gap = false;
+                                uint32_t expected_seq = 0;
+                                if (rp2040_have_last_seq_ && ap.frame_start != rp2040_last_seq_ + 1u) {
+                                    sequence_gap = true;
+                                    expected_seq = rp2040_last_seq_ + 1u;
+                                    rp2040_sequence_gaps_++;
+                                }
+                                rp2040_have_last_seq_ = true;
+                                rp2040_last_seq_ = ap.frame_start + ap.frame_count - 1;
+                                const uint16_t* samples = reinterpret_cast<const uint16_t*>(payload.data() + sizeof(ap));
+                                const auto now = std::chrono::steady_clock::now();
+                                for (uint16_t i = 0; i < ap.frame_count; ++i) {
+                                    pushFrameLocked(samples[i * 2], samples[i * 2 + 1], now, 0, 0);
+                                }
+                                if (sequence_gap) {
+                                    std::ostringstream oss;
+                                    oss << "GWP sequence gap: expected " << expected_seq << " got " << ap.frame_start;
+                                    last_error_ = oss.str();
+                                } else {
+                                    last_error_.clear();
+                                }
+                            }
+                        } else {
+                            last_error_ = "GWP unsupported ADC sample format/channel count";
+                        }
+                    } else if (gh.msg_type == GW_MSG_STATUS && payload.size() >= sizeof(gw_status_payload_t)) {
+                        gw_status_payload_t st{};
+                        std::memcpy(&st, payload.data(), sizeof(st));
+                        rp2040_declared_rate_hz_ = st.configured_sample_rate_hz;
+                        rp2040_firmware_lost_frames_ = st.lost_frames;
+                        rp2040_firmware_flags_ = st.flags;
+                        device_channel_count_ = st.channel_count;
+                        device_sample_format_ = st.sample_format;
+                    } else if (gh.msg_type == GW_MSG_CAPS && payload.size() >= sizeof(gw_caps_payload_t)) {
+                        gw_caps_payload_t caps{};
+                        std::memcpy(&caps, payload.data(), sizeof(caps));
+                        device_caps_max_rate_hz_ = caps.max_sample_rate_hz;
+                        device_caps_formats_ = caps.supported_sample_formats;
+                    }
+                }
+                window_fill = 0;
+                continue;
+            }
 
             Rp2040Header hdr{};
             std::memcpy(&hdr, window.data(), 4);
@@ -682,6 +828,14 @@ void AdcSampler::fillStatusLocked(AdcScopeData& data) const {
     data.rp2040_firmware_lost_frames = rp2040_firmware_lost_frames_;
     data.rp2040_firmware_flags     = rp2040_firmware_flags_;
     data.rp2040_declared_rate_hz   = rp2040_declared_rate_hz_;
+    data.device_protocol_active    = device_protocol_active_;
+    data.device_protocol           = device_protocol_;
+    data.device_transport          = device_transport_;
+    data.device_adc_stream_id      = device_adc_stream_id_;
+    data.device_channel_count      = device_channel_count_;
+    data.device_sample_format      = gw::sampleFormatName(device_sample_format_);
+    data.device_caps_max_rate_hz   = device_caps_max_rate_hz_;
+    data.device_caps_formats       = device_caps_formats_;
     data.valid_samples             = valid_samples_;
     data.history_capacity_samples  = ring_[0].size();
     data.last_error                = last_error_;

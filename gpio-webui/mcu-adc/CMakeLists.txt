@@ -32,6 +32,17 @@ target_compile_definitions(mcu_adc PRIVATE
     MCU_ADC_PIN_MOSI=3
     MCU_ADC_PACKET_FRAMES=128
     MCU_ADC_RING_FRAMES=4096
+    # Optional MCP4922 DAC on the other RP2040 SPI controller by default.
+    MCU_DAC_ENABLE=1
+    MCU_DAC_SPI_BAUD=10000000
+    MCU_DAC_SPI_PORT=1
+    MCU_DAC_PIN_CS=13
+    MCU_DAC_PIN_SCK=14
+    MCU_DAC_PIN_MOSI=15
+    MCU_DAC_PIN_LDAC=-1
+    MCU_DAC_PIN_SHDN=-1
+    MCU_DAC_DEFAULT_RATE_HZ=48000
+    MCU_DAC_MAX_RATE_HZ=100000
 )
 
 target_link_libraries(mcu_adc

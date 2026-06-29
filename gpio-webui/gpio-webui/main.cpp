@@ -14,6 +14,8 @@
 #include "WebServer.hpp"
 #include "SystemContext.hpp"
 #include "AdcSampler.hpp"
+#include "MCP4922.hpp"
+#include "DacOutput.hpp"
 #include "CallerIdDetector.hpp"
 #include "Ch1817Driver.hpp"
 #include "LineStateDetector.hpp"
@@ -68,6 +70,27 @@ void printUsage(const char* argv0, std::ostream& os) {
        << "  --adc-mosi-bcm N                   ADC MOSI/DIN BCM GPIO (default 10)\n"
        << "  --adc-miso-bcm N                   ADC MISO/DOUT BCM GPIO (default 9)\n"
        << "  --adc-gpio-chip N                  gpiochip number string for software CS (default 0)\n\n"
+       << "DAC options (MCP4922; disabled by default unless config/CLI enables it):\n"
+       << "  --dac-enable                       Enable MCP4922 DAC and persist dac_enabled=true\n"
+       << "  --dac-disable                      Disable MCP4922 DAC and persist dac_enabled=false\n"
+       << "  --dac-transport MODE               DAC transport: native or rp2040 (default native)\n"
+       << "  --dac-rp2040-dev PATH              RP2040 USB device for MCU DAC mode (default ADC RP2040 path)\n"
+       << "  --dac-bitbang                      Use GPIO bit-banged SPI for MCP4922\n"
+       << "  --dac-hw-spi                       Use Linux spidev hardware SPI for MCP4922 (default)\n"
+       << "  --dac-spi-dev PATH                 DAC spidev node (default /dev/spidev0.1)\n"
+       << "  --dac-spi-speed HZ                 DAC SPI clock speed (default 10000000)\n"
+       << "  --dac-cs-bcm N                     DAC chip-select BCM GPIO, or -1 for controller CE\n"
+       << "  --dac-clk-bcm N                    DAC clock BCM GPIO for bitbang/custom reservation (default 11)\n"
+       << "  --dac-mosi-bcm N                   DAC MOSI/SDI BCM GPIO (default 10)\n"
+       << "  --dac-ldac-bcm N                   Optional LDAC BCM GPIO, or -1 if tied low/unwired\n"
+       << "  --dac-shdn-bcm N                   Optional SHDN BCM GPIO, or -1 if tied high/unwired\n"
+       << "  --dac-vref VOLTS                   Set both DAC channel VREF values (default 3.3)\n"
+       << "  --dac-vref-a VOLTS                 Set DAC channel A VREF\n"
+       << "  --dac-vref-b VOLTS                 Set DAC channel B VREF\n"
+       << "  --dac-gain-a 1|2                   Set DAC channel A gain (default 1)\n"
+       << "  --dac-gain-b 1|2                   Set DAC channel B gain (default 1)\n"
+       << "  --dac-buffered-a 0|1               Set DAC channel A VREF buffering (default 0)\n"
+       << "  --dac-buffered-b 0|1               Set DAC channel B VREF buffering (default 0)\n\n"
        << "Server/config options:\n"
        << "  --config PATH                      JSON config path (default config.json)\n"
        << "  --host ADDR                        Listen address (default 0.0.0.0)\n"
@@ -161,6 +184,58 @@ std::map<int, std::shared_ptr<PinState>> buildBcmRegistry(const std::vector<int>
     return out;
 }
 
+bool parseBoolStrict(const std::string& s, const std::string& what) {
+    if (s == "1" || s == "true" || s == "on" || s == "yes") return true;
+    if (s == "0" || s == "false" || s == "off" || s == "no") return false;
+    throw std::runtime_error("Invalid boolean for " + what + ": '" + s + "'");
+}
+
+double parseDoubleStrict(const std::string& s, const std::string& what) {
+    size_t pos = 0;
+    double v = 0.0;
+    try { v = std::stod(s, &pos); } catch (...) { throw std::runtime_error("Invalid number for " + what + ": '" + s + "'"); }
+    if (pos != s.size()) throw std::runtime_error("Invalid number for " + what + ": '" + s + "'");
+    return v;
+}
+
+void persistDacConfig(ConfigManager& cfg, const DacOutput::Config& dac_out) {
+    const MCP4922::Config& dac = dac_out.native;
+    cfg.setSetting("dac_enabled", dac_out.enabled ? "true" : "false");
+    cfg.setSetting("dac_transport", dac_out.transport);
+    cfg.setSetting("dac_rp2040_dev", dac_out.rp2040_dev);
+    cfg.setSetting("dac_sample_rate_hz", std::to_string(dac_out.sample_rate_hz));
+    cfg.setSetting("dac_bitbang", dac.bitbang ? "true" : "false");
+    cfg.setSetting("dac_spi_dev", dac.device);
+    cfg.setSetting("dac_spi_speed_hz", std::to_string(dac.speed_hz));
+    cfg.setSetting("dac_cs_bcm", std::to_string(dac.cs_bcm));
+    cfg.setSetting("dac_clk_bcm", std::to_string(dac.clk_bcm));
+    cfg.setSetting("dac_mosi_bcm", std::to_string(dac.mosi_bcm));
+    cfg.setSetting("dac_ldac_bcm", std::to_string(dac.ldac_bcm));
+    cfg.setSetting("dac_shdn_bcm", std::to_string(dac.shdn_bcm));
+    cfg.setSetting("dac_vref_a", std::to_string(dac.channel[0].vref));
+    cfg.setSetting("dac_vref_b", std::to_string(dac.channel[1].vref));
+    cfg.setSetting("dac_gain_a", dac.channel[0].gain_1x ? "1" : "2");
+    cfg.setSetting("dac_gain_b", dac.channel[1].gain_1x ? "1" : "2");
+    cfg.setSetting("dac_buffered_a", dac.channel[0].buffered_vref ? "true" : "false");
+    cfg.setSetting("dac_buffered_b", dac.channel[1].buffered_vref ? "true" : "false");
+}
+
+std::set<int> configuredDacPins(const DacOutput::Config& dac_out) {
+    std::set<int> pins;
+    if (!dac_out.enabled || dac_out.transport != "native") return pins;
+    const MCP4922::Config& dac_config = dac_out.native;
+    pins.insert(dac_config.clk_bcm);
+    pins.insert(dac_config.mosi_bcm);
+    if (dac_config.cs_bcm >= 0) pins.insert(dac_config.cs_bcm);
+    if (dac_config.ldac_bcm >= 0) pins.insert(dac_config.ldac_bcm);
+    if (dac_config.shdn_bcm >= 0) pins.insert(dac_config.shdn_bcm);
+    if (!dac_config.bitbang) {
+        if (dac_config.device.find("spidev0.1") != std::string::npos) pins.insert(7);
+        else if (dac_config.device.find("spidev0.0") != std::string::npos) pins.insert(8);
+    }
+    return pins;
+}
+
 std::set<int> configuredAdcPins(const AdcSampler::Config& adc_config) {
     std::set<int> pins;
     if (!adc_config.enabled) return pins;
@@ -225,6 +300,10 @@ int main(int argc, char* argv[]) {
     adc_config.adc.miso_bcm = 9;
     adc_config.adc.cs_bcm = 8; // default MCP3202 CS is Raspberry Pi SPI0 CE0: physical pin 24 / BCM8
 
+    DacOutput::Config dac_output_config;
+    MCP4922::Config& dac_config = dac_output_config.native;
+    bool dac_cli_touched = false;
+
     // Load saved settings from config file before parsing CLI overrides
     ConfigManager temp_cfg_mgr(context->config_path);
     adc_config.adc_source = temp_cfg_mgr.getSetting("adc_source", "mcp3202-spidev");
@@ -234,6 +313,34 @@ int main(int argc, char* argv[]) {
         if (!saved_rate.empty()) adc_config.sample_rate_hz = parseUInt32Strict(saved_rate, "adc_sample_rate_hz");
     } catch (const std::exception& e) {
         std::cerr << "[CONFIG] Ignoring invalid adc_sample_rate_hz: " << e.what() << std::endl;
+    }
+    try {
+        dac_output_config.enabled = parseBoolStrict(temp_cfg_mgr.getSetting("dac_enabled", "false"), "dac_enabled");
+        dac_config.enabled = dac_output_config.enabled;
+        dac_output_config.transport = temp_cfg_mgr.getSetting("dac_transport", "native");
+        if (dac_output_config.transport != "native" && dac_output_config.transport != "rp2040") dac_output_config.transport = "native";
+        dac_output_config.rp2040_dev = temp_cfg_mgr.getSetting("dac_rp2040_dev", adc_config.rp2040_dev);
+        std::string dac_rate_saved = temp_cfg_mgr.getSetting("dac_sample_rate_hz", "");
+        if (!dac_rate_saved.empty()) dac_output_config.sample_rate_hz = parseUInt32Strict(dac_rate_saved, "dac_sample_rate_hz");
+        dac_config.bitbang = parseBoolStrict(temp_cfg_mgr.getSetting("dac_bitbang", "false"), "dac_bitbang");
+        dac_config.device = temp_cfg_mgr.getSetting("dac_spi_dev", dac_config.device);
+        std::string s;
+        s = temp_cfg_mgr.getSetting("dac_spi_speed_hz", ""); if (!s.empty()) dac_config.speed_hz = parseUInt32Strict(s, "dac_spi_speed_hz");
+        s = temp_cfg_mgr.getSetting("dac_cs_bcm", ""); if (!s.empty()) dac_config.cs_bcm = parseIntStrict(s, "dac_cs_bcm");
+        s = temp_cfg_mgr.getSetting("dac_clk_bcm", ""); if (!s.empty()) dac_config.clk_bcm = parseIntStrict(s, "dac_clk_bcm");
+        s = temp_cfg_mgr.getSetting("dac_mosi_bcm", ""); if (!s.empty()) dac_config.mosi_bcm = parseIntStrict(s, "dac_mosi_bcm");
+        s = temp_cfg_mgr.getSetting("dac_ldac_bcm", ""); if (!s.empty()) dac_config.ldac_bcm = parseIntStrict(s, "dac_ldac_bcm");
+        s = temp_cfg_mgr.getSetting("dac_shdn_bcm", ""); if (!s.empty()) dac_config.shdn_bcm = parseIntStrict(s, "dac_shdn_bcm");
+        s = temp_cfg_mgr.getSetting("dac_vref_a", ""); if (!s.empty()) dac_config.channel[0].vref = parseDoubleStrict(s, "dac_vref_a");
+        s = temp_cfg_mgr.getSetting("dac_vref_b", ""); if (!s.empty()) dac_config.channel[1].vref = parseDoubleStrict(s, "dac_vref_b");
+        s = temp_cfg_mgr.getSetting("dac_gain_a", ""); if (!s.empty()) dac_config.channel[0].gain_1x = parseIntStrict(s, "dac_gain_a") == 1;
+        s = temp_cfg_mgr.getSetting("dac_gain_b", ""); if (!s.empty()) dac_config.channel[1].gain_1x = parseIntStrict(s, "dac_gain_b") == 1;
+        s = temp_cfg_mgr.getSetting("dac_buffered_a", ""); if (!s.empty()) dac_config.channel[0].buffered_vref = parseBoolStrict(s, "dac_buffered_a");
+        s = temp_cfg_mgr.getSetting("dac_buffered_b", ""); if (!s.empty()) dac_config.channel[1].buffered_vref = parseBoolStrict(s, "dac_buffered_b");
+    } catch (const std::exception& e) {
+        std::cerr << "[CONFIG] Ignoring invalid DAC setting: " << e.what() << std::endl;
+        dac_output_config = DacOutput::Config();
+        dac_config = dac_output_config.native;
     }
 
     try {
@@ -314,6 +421,80 @@ int main(int argc, char* argv[]) {
                 adc_config.adc.bitbang = true;
             } else if (arg == "--adc-hw-spi") {
                 adc_config.adc.bitbang = false;
+            } else if (arg == "--dac-enable") {
+                dac_output_config.enabled = true;
+                dac_config.enabled = true;
+                dac_cli_touched = true;
+            } else if (arg == "--dac-disable") {
+                dac_output_config.enabled = false;
+                dac_config.enabled = false;
+                dac_cli_touched = true;
+            } else if (arg == "--dac-transport") {
+                dac_output_config.transport = requireValue(i, argc, argv, arg);
+                if (dac_output_config.transport != "native" && dac_output_config.transport != "rp2040") throw std::runtime_error("--dac-transport must be native or rp2040");
+                dac_cli_touched = true;
+            } else if (arg == "--dac-rp2040-dev") {
+                dac_output_config.rp2040_dev = requireValue(i, argc, argv, arg);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-bitbang") {
+                dac_config.bitbang = true;
+                dac_cli_touched = true;
+            } else if (arg == "--dac-hw-spi") {
+                dac_config.bitbang = false;
+                dac_cli_touched = true;
+            } else if (arg == "--dac-spi-dev") {
+                dac_config.device = requireValue(i, argc, argv, arg);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-spi-speed") {
+                dac_config.speed_hz = parseUInt32Strict(requireValue(i, argc, argv, arg), arg);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-cs-bcm") {
+                dac_config.cs_bcm = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-clk-bcm") {
+                dac_config.clk_bcm = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-mosi-bcm") {
+                dac_config.mosi_bcm = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-ldac-bcm") {
+                dac_config.ldac_bcm = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-shdn-bcm") {
+                dac_config.shdn_bcm = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-vref") {
+                double v = parseDoubleStrict(requireValue(i, argc, argv, arg), arg);
+                if (v <= 0.0) throw std::runtime_error("--dac-vref must be positive");
+                dac_config.channel[0].vref = v;
+                dac_config.channel[1].vref = v;
+                dac_cli_touched = true;
+            } else if (arg == "--dac-vref-a") {
+                double v = parseDoubleStrict(requireValue(i, argc, argv, arg), arg);
+                if (v <= 0.0) throw std::runtime_error("--dac-vref-a must be positive");
+                dac_config.channel[0].vref = v;
+                dac_cli_touched = true;
+            } else if (arg == "--dac-vref-b") {
+                double v = parseDoubleStrict(requireValue(i, argc, argv, arg), arg);
+                if (v <= 0.0) throw std::runtime_error("--dac-vref-b must be positive");
+                dac_config.channel[1].vref = v;
+                dac_cli_touched = true;
+            } else if (arg == "--dac-gain-a") {
+                int g = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                if (g != 1 && g != 2) throw std::runtime_error("--dac-gain-a must be 1 or 2");
+                dac_config.channel[0].gain_1x = (g == 1);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-gain-b") {
+                int g = parseIntStrict(requireValue(i, argc, argv, arg), arg);
+                if (g != 1 && g != 2) throw std::runtime_error("--dac-gain-b must be 1 or 2");
+                dac_config.channel[1].gain_1x = (g == 1);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-buffered-a") {
+                dac_config.channel[0].buffered_vref = parseBoolStrict(requireValue(i, argc, argv, arg), arg);
+                dac_cli_touched = true;
+            } else if (arg == "--dac-buffered-b") {
+                dac_config.channel[1].buffered_vref = parseBoolStrict(requireValue(i, argc, argv, arg), arg);
+                dac_cli_touched = true;
             } else if (arg == "--adc-disable" || arg == "--gpio-only" || arg == "--full-gpio") {
                 adc_config.enabled = false;
             } else {
@@ -364,6 +545,10 @@ int main(int argc, char* argv[]) {
     }
 
     std::set<int> reserved_gpio = configuredAdcPins(adc_config);
+    dac_output_config.native.enabled = dac_output_config.enabled && dac_output_config.transport == "native";
+    if (dac_output_config.rp2040_dev.empty()) dac_output_config.rp2040_dev = adc_config.rp2040_dev;
+    std::set<int> dac_reserved = configuredDacPins(dac_output_config);
+    reserved_gpio.insert(dac_reserved.begin(), dac_reserved.end());
     try {
         if (ch1817_driver && ch1817_driver->settings().enabled) {
             reserved_gpio.insert(ch1817_driver->offhookBcm());
@@ -377,9 +562,20 @@ int main(int argc, char* argv[]) {
     removeReservedPinsFromRegistry(registry, reserved_gpio);
 
     ConfigManager config_mgr(context->config_path);
+    if (dac_cli_touched) {
+        persistDacConfig(config_mgr, dac_output_config);
+        std::cout << "[DAC] Persisted MCP4922 DAC settings to " << context->config_path << std::endl;
+    }
     int loaded_timeout = 5000;
     if (config_mgr.load(registry, loaded_timeout)) {
         context->timeout_ms = loaded_timeout;
+    }
+
+    std::unique_ptr<DacOutput> dac_output;
+    if (dac_output_config.enabled) {
+        std::cout << "[DAC] MCP4922 enabled; transport " << dac_output_config.transport << "; hardware is opened lazily on first write." << std::endl;
+    } else {
+        std::cout << "[DAC] MCP4922 disabled (enable with --dac-enable or dac_enabled=true)." << std::endl;
     }
 
     std::unique_ptr<AdcSampler> adc_sampler;
@@ -394,6 +590,8 @@ int main(int argc, char* argv[]) {
         caller_id_detector->start();
     }
 
+    dac_output = std::make_unique<DacOutput>(dac_output_config, (dac_output_config.transport == "rp2040" ? adc_sampler.get() : nullptr));
+
     if (ch1817_driver) ch1817_driver->start();
     if (adc_sampler) {
         line_state_detector = std::make_unique<LineStateDetector>(context, adc_sampler.get(), ch1817_driver.get());
@@ -406,12 +604,30 @@ int main(int argc, char* argv[]) {
     GpioManager gpio_mgr(registry, reserved_gpio);
     gpio_mgr.start(context->timeout_ms);
 
-    WebServer web_server(registry, config_mgr, gpio_mgr, context, adc_sampler.get(), caller_id_detector.get(), ch1817_driver.get(), line_state_detector.get(), telephony_coordinator.get(), telephony_diagnostics.get(), reserved_gpio);
+    WebServer web_server(registry, config_mgr, gpio_mgr, context, adc_sampler.get(), dac_output.get(), caller_id_detector.get(), ch1817_driver.get(), line_state_detector.get(), telephony_coordinator.get(), telephony_diagnostics.get(), reserved_gpio);
     
     std::cout << "=====================================================" << std::endl;
     std::cout << "Starting Modular CM4 GPIO" << (adc_config.enabled ? " + ADC (" + adc_config.adc_source + ")" : " Full-Control")
               << " Server on " << listen_host << ":" << listen_port << "..." << std::endl;
     std::cout << "Config path: " << context->config_path << std::endl;
+    if (dac_output_config.enabled) {
+        std::cout << "DAC: enabled MCP4922"
+                  << ", transport " << dac_output_config.transport
+                  << ", mode " << (dac_config.bitbang ? "bitbang" : "hardware-spi")
+                  << ", device " << dac_config.device
+                  << ", CS BCM " << dac_config.cs_bcm
+                  << ", CLK BCM " << dac_config.clk_bcm
+                  << ", MOSI BCM " << dac_config.mosi_bcm
+                  << ", LDAC BCM " << dac_config.ldac_bcm
+                  << ", SHDN BCM " << dac_config.shdn_bcm
+                  << ", VREF A " << dac_config.channel[0].vref
+                  << ", VREF B " << dac_config.channel[1].vref
+                  << ", gain A " << (dac_config.channel[0].gain_1x ? "1x" : "2x")
+                  << ", gain B " << (dac_config.channel[1].gain_1x ? "1x" : "2x")
+                  << ", RP2040 device " << dac_output_config.rp2040_dev << std::endl;
+    } else {
+        std::cout << "DAC: disabled" << std::endl;
+    }
     if (adc_config.enabled) {
         if (adc_config.adc_source == "rp2040") {
             std::cout << "ADC/graph: enabled\n"
@@ -459,6 +675,7 @@ int main(int argc, char* argv[]) {
     if (caller_id_detector) caller_id_detector->stop();
     if (ch1817_driver) ch1817_driver->stop();
     if (adc_sampler) adc_sampler->stop();
+    if (dac_output) { std::string ignored; dac_output->stop(ignored); }
     gpio_mgr.stop();
     return 0;
 }
