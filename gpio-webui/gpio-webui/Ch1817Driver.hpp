@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SystemContext.hpp"
+#include "McuPeripheral.hpp"
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -9,6 +10,8 @@
 #include <string>
 #include <thread>
 #include <gpiod.hpp>
+
+class AdcSampler;
 
 struct Ch1817Settings {
     bool enabled = true;
@@ -21,7 +24,7 @@ struct Ch1817Settings {
 
 class Ch1817Driver {
 public:
-    explicit Ch1817Driver(std::shared_ptr<SystemContext> context);
+    explicit Ch1817Driver(std::shared_ptr<SystemContext> context, AdcSampler* adc_sampler = nullptr);
     ~Ch1817Driver();
 
     void start();
@@ -32,6 +35,8 @@ public:
     nlohmann::json snapshotJson() const;
     void updateFromJson(const nlohmann::json& j);
     void setOffhook(bool offhook);
+    void setMcuPeripheralConfig(const McuPeripheralConfig& config);
+    void setAdcSampler(AdcSampler* adc_sampler);
 
     int offhookBcm() const;
     int riBcm() const;
@@ -45,8 +50,10 @@ private:
     void worker();
     void load();
     void saveLocked();
+    void updateMcuTelephonyStateLocked(const McuPeripheralSnapshot& snap, const std::chrono::steady_clock::time_point& now);
 
     std::shared_ptr<SystemContext> context_;
+    AdcSampler* adc_sampler_ = nullptr;
     mutable std::mutex mtx_;
     Ch1817Settings settings_;
     bool ri_level_ = true;
@@ -55,6 +62,15 @@ private:
     uint64_t ri_edges_ = 0;
     std::string status_ = "stopped";
     std::string last_error_;
+    McuPeripheralConfig mcu_periph_config_;
+    bool using_mcu_ri_ = false;
+    bool using_mcu_oh_ = false;
+    bool mcu_ri_raw_ = false;
+    bool mcu_ri_logical_ = false;
+    bool mcu_oh_raw_ = false;
+    bool mcu_oh_logical_ = false;
+    uint32_t mcu_ri_transitions_ = 0;
+    uint32_t mcu_oh_transitions_ = 0;
     std::chrono::steady_clock::time_point ring_start_{};
     std::chrono::steady_clock::time_point last_edge_{};
     std::chrono::steady_clock::time_point freq_window_start_{};

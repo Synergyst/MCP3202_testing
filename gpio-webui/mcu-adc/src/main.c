@@ -166,8 +166,8 @@ static uint32_t dtmf_inc_col = 0;
 
 
 #define MCU_MT8870_DEFAULT_STQ_PIN 12u
-#define MCU_MT8870_DEFAULT_Q1_PIN 26u
-#define MCU_MT8870_DEFAULT_Q2_PIN 27u
+#define MCU_MT8870_DEFAULT_Q1_PIN 27u
+#define MCU_MT8870_DEFAULT_Q2_PIN 26u
 #define MCU_MT8870_DEFAULT_Q3_PIN 10u
 #define MCU_MT8870_DEFAULT_Q4_PIN 11u
 #define MCU_CH1817_DEFAULT_RI_PIN 8u
@@ -189,6 +189,7 @@ typedef struct {
     bool oh_enabled;
     uint8_t oh_gpio;
     bool oh_active_high;
+    bool oh_drive;
     uint16_t debounce_ms;
     uint16_t event_holdoff_ms;
 } mcu_periph_config_t;
@@ -205,10 +206,11 @@ static mcu_periph_config_t mcu_periph_cfg = {
     .q_active_high = true,
     .ri_enabled = false,
     .ri_gpio = MCU_CH1817_DEFAULT_RI_PIN,
-    .ri_active_high = true,
+    .ri_active_high = false,
     .oh_enabled = false,
     .oh_gpio = MCU_CH1817_DEFAULT_OH_PIN,
     .oh_active_high = true,
+    .oh_drive = false,
     .debounce_ms = 2,
     .event_holdoff_ms = 25,
 };
@@ -231,6 +233,7 @@ static bool ri_logical = false;
 static uint32_t ri_transition_count = 0;
 static bool oh_raw = false;
 static bool oh_logical = false;
+static bool oh_drive = false;
 static uint32_t oh_transition_count = 0;
 static bool periph_initialized = false;
 static uint32_t last_periph_status_ms = 0;
@@ -435,6 +438,13 @@ static void periph_init_input(uint8_t gpio) {
     gpio_disable_pulls(gpio);
 }
 
+static void periph_init_output(uint8_t gpio, bool raw_level) {
+    if (!gpio_valid_pin(gpio)) return;
+    gpio_init(gpio);
+    gpio_set_dir(gpio, GPIO_OUT);
+    gpio_put(gpio, raw_level ? 1 : 0);
+}
+
 static void periph_configure_pins(void) {
     if (!mcu_periph_cfg.enabled) return;
     if (mcu_periph_cfg.dtmf_enabled) {
@@ -445,7 +455,7 @@ static void periph_configure_pins(void) {
         periph_init_input(mcu_periph_cfg.q4_gpio);
     }
     if (mcu_periph_cfg.ri_enabled) periph_init_input(mcu_periph_cfg.ri_gpio);
-    if (mcu_periph_cfg.oh_enabled) periph_init_input(mcu_periph_cfg.oh_gpio);
+    if (mcu_periph_cfg.oh_enabled) periph_init_output(mcu_periph_cfg.oh_gpio, mcu_periph_cfg.oh_active_high ? mcu_periph_cfg.oh_drive : !mcu_periph_cfg.oh_drive);
     periph_initialized = true;
 }
 
@@ -521,11 +531,15 @@ static void periph_poll(void) {
         ri_logical = logical;
     }
     if (mcu_periph_cfg.oh_enabled) {
-        bool raw = periph_read_gpio(mcu_periph_cfg.oh_gpio);
-        bool logical = mcu_periph_cfg.oh_active_high ? raw : !raw;
+        bool logical = mcu_periph_cfg.oh_drive;
+        bool raw = mcu_periph_cfg.oh_active_high ? logical : !logical;
         if (raw != oh_raw || logical != oh_logical) oh_transition_count++;
+        if (gpio_valid_pin(mcu_periph_cfg.oh_gpio)) gpio_put(mcu_periph_cfg.oh_gpio, raw ? 1 : 0);
         oh_raw = raw;
         oh_logical = logical;
+        oh_drive = logical;
+    } else {
+        oh_drive = false;
     }
 }
 
@@ -551,6 +565,7 @@ static void send_periph_status(void) {
     st.ri_logical = ri_logical ? 1 : 0;
     st.oh_raw = oh_raw ? 1 : 0;
     st.oh_logical = oh_logical ? 1 : 0;
+    st.oh_drive = oh_drive ? 1 : 0;
     write_packet(GW_MSG_STATUS, GW_STREAM_CONTROL, &st, sizeof(st));
 }
 
@@ -573,6 +588,7 @@ static uint16_t handle_periph_config(const uint8_t *args, uint16_t arg_len) {
     mcu_periph_cfg.oh_enabled = p.oh_enabled != 0;
     mcu_periph_cfg.oh_gpio = p.oh_gpio;
     mcu_periph_cfg.oh_active_high = p.oh_active_high != 0;
+    mcu_periph_cfg.oh_drive = p.oh_drive != 0;
     mcu_periph_cfg.debounce_ms = p.debounce_ms;
     mcu_periph_cfg.event_holdoff_ms = p.event_holdoff_ms;
     periph_initialized = false;

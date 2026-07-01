@@ -245,10 +245,10 @@ typedef struct GW_PACKED {
     uint8_t  ri_enabled;
     uint8_t  ri_gpio;
     uint8_t  ri_active_high;
-    uint8_t  oh_enabled;
+    uint8_t  oh_enabled;      /* OH is MCU output to CH1817 when enabled */
     uint8_t  oh_gpio;
     uint8_t  oh_active_high;
-    uint8_t  reserved0;
+    uint8_t  oh_drive;        /* logical requested OH state from host */
     uint16_t debounce_ms;
     uint16_t event_holdoff_ms;
 } gw_gpio_periph_config_payload_t;
@@ -273,7 +273,7 @@ typedef struct GW_PACKED {
     uint8_t  ri_logical;
     uint8_t  oh_raw;
     uint8_t  oh_logical;
-    uint8_t  reserved0;
+    uint8_t  oh_drive;
     uint8_t  reserved1;
 } gw_gpio_periph_status_payload_t;
 

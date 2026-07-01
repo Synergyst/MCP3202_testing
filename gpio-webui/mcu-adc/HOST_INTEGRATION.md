@@ -33,6 +33,29 @@ Persisted config keys:
 }
 ```
 
+RP2040 peripheral pins and source selection are persisted under top-level `mcu_peripherals`, separate from CM4 physical-header `pins`:
+
+```json
+{
+  "mcu_peripherals": {
+    "enabled": true,
+    "dtmf_decoder": {
+      "enabled": true,
+      "source": "mcu_mt8870",
+      "pins": { "stq": 12, "q1": 27, "q2": 26, "q3": 10, "q4": 11 },
+      "polarity": { "stq_active_high": true, "q_active_high": true },
+      "debounce_ms": 2,
+      "event_holdoff_ms": 25,
+      "history_limit": 64
+    },
+    "ch1817_signals": {
+      "ri": { "source": "mcu", "gpio": 8, "active_high": false },
+      "oh": { "source": "mcu", "gpio": 7, "active_high": true }
+    }
+  }
+}
+```
+
 ## Runtime API
 
 Update ADC source/device/rate:
@@ -125,6 +148,19 @@ Packet tail:
 uint32_t crc32; // CRC32 over header + frames
 ```
 
+## MCU peripheral APIs
+
+The server programs the MCU at startup, reconnect, and WebUI config changes using GWP1. Useful endpoints:
+
+```text
+GET  /api/mcu/peripherals/status
+POST /api/mcu/peripherals/config
+GET  /api/dac/dtmf/decoder/status
+POST /api/dac/dtmf/decoder/history/clear
+```
+
+`/api/status` also includes `mcu_peripherals` so browser polling can update live raw pin state and config-send status.
+
 ## Web UI
 
 The Scope tab now includes:
@@ -141,6 +177,15 @@ WAV exports use source-aware filenames such as:
 ```text
 rp2040_ch0_dry_250ms_16149hz.wav
 ```
+
+The DAC/DTMF area includes:
+
+- MCU peripheral config editor for MT8870 `StQ/Q1-Q4`, CH1817 RI, and CH1817 OH/OFFHK.
+- DTMF decoder live raw pin monitor.
+- Last-N decoded DTMF history with clear/copy controls.
+- Guided expected-sequence validation and Q-pin mapping suggestion.
+
+The Telephony tab uses CH1817 state from the selected source. With `ri.source=mcu`, RI/ringing is derived from MCU GP8 active-low by default. With `oh.source=mcu`, off-hook requests drive MCU GP7 active-high by default.
 
 ## Recommended rates
 

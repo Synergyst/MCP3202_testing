@@ -60,7 +60,30 @@ MCU DTMF generation is implemented in RP2040 firmware and is selected through th
 - 5 ms attack/release ramping to reduce clicks.
 - DAC midpoint 2048 as silence for inactive channels and tone gaps.
 
-The GWP1 DTMF protocol structs were not changed; status `remaining_ms` is derived from remaining synthesis samples.
+DTMF generation is independent from MT8870 DTMF detection. The MT8870 decoder is exposed as an MCU GPIO peripheral and reports raw `StQ/Q1-Q4`, decoded digits, and a runtime last-N history through the WebUI/API.
+
+Known-good MT8870 GPIO mapping:
+
+| MT8870 signal | RP2040 GPIO |
+|---|---:|
+| `StQ` | GP12 |
+| `Q1` | GP27 |
+| `Q2` | GP26 |
+| `Q3` | GP10 |
+| `Q4` | GP11 |
+
+The MT8870 analog input source is not assumed. It can be any properly conditioned DTMF source.
+
+## CH1817 MCU RI/OH offload
+
+The MCU peripheral path can also handle CH1817 sideband signals when configured in `mcu_peripherals`:
+
+| CH1817 signal | RP2040 GPIO | Direction | Polarity |
+|---|---:|---|---|
+| `RI` | GP8 | input from CH1817 | active low |
+| `OH` / `OFFHK` | GP7 | output to CH1817 | active high |
+
+The CM4 telephony stack uses MCU RI/OH only when the corresponding source is set to `mcu`; otherwise the existing CM4 GPIO path remains available.
 
 ## Self-tests
 

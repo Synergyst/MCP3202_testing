@@ -360,7 +360,12 @@ int main(int argc, char* argv[]) {
         dac_output_config = DacOutput::Config();
         dac_config = dac_output_config.native;
     }
+    const bool mcu_peripheral_config_present = configFileHasMcuPeripheralSection(context->config_path);
     mcu_peripheral_config = loadMcuPeripheralConfigFromFile(context->config_path, mcu_peripheral_config);
+    if (!mcu_peripheral_config_present) {
+        persistMcuPeripheralConfigToFile(context->config_path, mcu_peripheral_config);
+        std::cout << "[MCU] Wrote default mcu_peripherals section to " << context->config_path << std::endl;
+    }
 
     try {
         for (int i = 1; i < argc; ++i) {
@@ -629,6 +634,7 @@ int main(int argc, char* argv[]) {
     if (adc_config.enabled) {
         adc_sampler = std::make_unique<AdcSampler>(adc_config, context->signal_buffer);
         adc_sampler->updateMcuPeripheralConfig(mcu_peripheral_config);
+        if (ch1817_driver) ch1817_driver->setAdcSampler(adc_sampler.get());
         adc_sampler->start();
         caller_id_detector = std::make_unique<CallerIdDetector>(adc_sampler.get(), context, &filter_profiles);
         caller_id_detector->start();

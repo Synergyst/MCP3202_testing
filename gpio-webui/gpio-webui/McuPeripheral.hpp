@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <fstream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -12,8 +13,8 @@ struct McuDtmfDecoderConfig {
     bool enabled = true;
     std::string source = "mcu_mt8870";
     int stq_gpio = 12;
-    int q1_gpio = 26;
-    int q2_gpio = 27;
+    int q1_gpio = 27;
+    int q2_gpio = 26;
     int q3_gpio = 10;
     int q4_gpio = 11;
     bool stq_active_high = true;
@@ -34,8 +35,8 @@ struct McuCh1817SignalConfig {
 struct McuPeripheralConfig {
     bool enabled = true;
     McuDtmfDecoderConfig dtmf_decoder;
-    McuCh1817SignalConfig ri;
-    McuCh1817SignalConfig oh;
+    McuCh1817SignalConfig ri{"cm4", 8, false}; // CH1817 RI is active-low by default.
+    McuCh1817SignalConfig oh{"cm4", 7, true};  // CH1817 OH/OFFHK is active-high by default.
 };
 
 struct DtmfDecodedEvent {
@@ -52,6 +53,11 @@ struct McuPeripheralSnapshot {
     McuPeripheralConfig config;
     bool connected = false;
     bool status_seen = false;
+    bool config_dirty = true;
+    bool config_sent = false;
+    uint64_t last_config_send_server_ms = 0;
+    uint32_t config_apply_count = 0;
+    std::string last_config_error;
     uint64_t last_status_server_ms = 0;
     uint32_t uptime_ms = 0;
     bool enabled = false;
@@ -71,6 +77,7 @@ struct McuPeripheralSnapshot {
     uint32_t ri_transition_count = 0;
     bool oh_raw = false;
     bool oh_logical = false;
+    bool oh_drive = false;
     uint32_t oh_transition_count = 0;
     std::deque<DtmfDecodedEvent> history;
 };
@@ -154,8 +161,10 @@ inline McuPeripheralConfig mcuPeripheralConfigFromJson(const nlohmann::json& roo
         const auto& c = j["ch1817_signals"];
         McuCh1817SignalConfig ri_def = out.ri;
         ri_def.gpio = 8;
+        ri_def.active_high = false;
         McuCh1817SignalConfig oh_def = out.oh;
         oh_def.gpio = 7;
+        oh_def.active_high = true;
         out.ri = mcuSignalConfigFromJson(c.value("ri", nlohmann::json::object()), ri_def);
         out.oh = mcuSignalConfigFromJson(c.value("oh", nlohmann::json::object()), oh_def);
         if (c.contains("enabled") && !mcuJsonBoolish(c, "enabled", true)) {
@@ -200,4 +209,30 @@ inline McuPeripheralConfig loadMcuPeripheralConfigFromFile(const std::string& pa
     } catch (...) {
         return def;
     }
+}
+
+inline bool configFileHasMcuPeripheralSection(const std::string& path) {
+    std::ifstream f(path);
+    if (!f.is_open()) return false;
+    try {
+        nlohmann::json j;
+        f >> j;
+        return j.is_object() && j.contains("mcu_peripherals") && j["mcu_peripherals"].is_object();
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void persistMcuPeripheralConfigToFile(const std::string& path, const McuPeripheralConfig& cfg) {
+    nlohmann::json root;
+    {
+        std::ifstream f(path);
+        if (f.is_open()) {
+            try { f >> root; } catch (...) { root = nlohmann::json::object(); }
+        }
+    }
+    if (!root.is_object()) root = nlohmann::json::object();
+    root["mcu_peripherals"] = mcuPeripheralConfigToJson(cfg);
+    std::ofstream out(path);
+    if (out.is_open()) out << root.dump(2);
 }

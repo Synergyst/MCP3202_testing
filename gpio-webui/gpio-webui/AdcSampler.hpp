@@ -108,6 +108,7 @@ public:
     McuPeripheralConfig mcuPeripheralConfig() const;
     McuPeripheralSnapshot mcuPeripheralSnapshot() const;
     void clearMcuDtmfHistory();
+    void setMcuOhDrive(bool offhook);
     AdcScopeData status() const;
     AdcScopeData snapshot(size_t max_points = 1600) const;
     AdcScopeData recent(size_t frames) const;

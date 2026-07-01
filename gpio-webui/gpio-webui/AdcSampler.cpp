@@ -207,7 +207,7 @@ static uint64_t steadyMsForMcuPeripheral() {
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-static gw_gpio_periph_config_payload_t toGwPeripheralConfig(const McuPeripheralConfig& cfg) {
+static gw_gpio_periph_config_payload_t toGwPeripheralConfig(const McuPeripheralConfig& cfg, bool oh_drive) {
     gw_gpio_periph_config_payload_t p{};
     p.enabled = cfg.enabled ? 1 : 0;
     p.dtmf_enabled = cfg.dtmf_decoder.enabled ? 1 : 0;
@@ -224,13 +224,14 @@ static gw_gpio_periph_config_payload_t toGwPeripheralConfig(const McuPeripheralC
     p.oh_enabled = (cfg.oh.source == "mcu") ? 1 : 0;
     p.oh_gpio = static_cast<uint8_t>(std::max(0, std::min(29, cfg.oh.gpio)));
     p.oh_active_high = cfg.oh.active_high ? 1 : 0;
+    p.oh_drive = oh_drive ? 1 : 0;
     p.debounce_ms = static_cast<uint16_t>(std::max(0, std::min(1000, cfg.dtmf_decoder.debounce_ms)));
     p.event_holdoff_ms = static_cast<uint16_t>(std::max(0, std::min(10000, cfg.dtmf_decoder.event_holdoff_ms)));
     return p;
 }
 
 bool AdcSampler::sendMcuPeripheralConfigLocked(int fd, std::string& error) {
-    gw_gpio_periph_config_payload_t p = toGwPeripheralConfig(mcu_periph_config_);
+    gw_gpio_periph_config_payload_t p = toGwPeripheralConfig(mcu_periph_config_, mcu_periph_state_.oh_drive);
     auto pkt = gw::encodeControlRequest(GW_OP_GPIO_PERIPH_CONFIG, gw_request_id_++, &p, sizeof(p), gw_packet_seq_++);
     size_t sent = 0;
     while (sent < pkt.size()) {
@@ -239,9 +240,16 @@ bool AdcSampler::sendMcuPeripheralConfigLocked(int fd, std::string& error) {
         if (rc < 0 && errno == EINTR) continue;
         if (rc < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; }
         error = "Failed to write MCU peripheral config: " + std::string(std::strerror(errno));
+        mcu_periph_state_.last_config_error = error;
+        mcu_periph_state_.config_dirty = true;
         return false;
     }
     mcu_periph_config_dirty_ = false;
+    mcu_periph_state_.config_dirty = false;
+    mcu_periph_state_.config_sent = true;
+    mcu_periph_state_.last_config_send_server_ms = steadyMsForMcuPeripheral();
+    mcu_periph_state_.config_apply_count++;
+    mcu_periph_state_.last_config_error.clear();
     return true;
 }
 
@@ -268,6 +276,7 @@ void AdcSampler::processMcuPeripheralStatusLocked(const gw_gpio_periph_status_pa
     mcu_periph_state_.ri_transition_count = st.ri_transition_count;
     mcu_periph_state_.oh_raw = st.oh_raw != 0;
     mcu_periph_state_.oh_logical = st.oh_logical != 0;
+    mcu_periph_state_.oh_drive = st.oh_drive != 0;
     mcu_periph_state_.oh_transition_count = st.oh_transition_count;
 
     if (st.dtmf_sequence != 0 && st.dtmf_sequence != mcu_periph_last_sequence_) {
@@ -291,6 +300,8 @@ void AdcSampler::updateMcuPeripheralConfig(const McuPeripheralConfig& config) {
     mcu_periph_config_ = config;
     mcu_periph_state_.config = config;
     mcu_periph_config_dirty_ = true;
+    mcu_periph_state_.config_dirty = true;
+    mcu_periph_state_.config_sent = false;
     const size_t limit = std::max<size_t>(1, mcu_periph_config_.dtmf_decoder.history_limit);
     while (mcu_periph_state_.history.size() > limit) mcu_periph_state_.history.pop_front();
 }
@@ -305,12 +316,21 @@ McuPeripheralSnapshot AdcSampler::mcuPeripheralSnapshot() const {
     McuPeripheralSnapshot out = mcu_periph_state_;
     out.config = mcu_periph_config_;
     out.connected = rp2040_connected_;
+    out.config_dirty = mcu_periph_config_dirty_;
     return out;
 }
 
 void AdcSampler::clearMcuDtmfHistory() {
     std::lock_guard<std::mutex> lock(mtx_);
     mcu_periph_state_.history.clear();
+}
+
+void AdcSampler::setMcuOhDrive(bool offhook) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    mcu_periph_state_.oh_drive = offhook;
+    mcu_periph_state_.oh_logical = offhook;
+    mcu_periph_config_dirty_ = true;
+    mcu_periph_state_.config_dirty = true;
 }
 
 bool AdcSampler::waitForGwpProtocol(uint32_t timeout_ms, std::string& error) const {

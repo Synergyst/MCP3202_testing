@@ -167,6 +167,37 @@ DAC opcodes:
 | `GW_OP_DAC_STREAM_STOP` | none | Stop DAC DATA consumption. |
 | `GW_OP_DAC_FLUSH` | none | Drop/clear pending DAC data; RP2040 backend also writes zero to both channels. |
 | `GW_OP_DAC_GET_STATUS` | none | Emit DAC status. |
+| `GW_OP_DAC_DTMF_PLAY` | `gw_dtmf_play_payload_t` | Play standard DTMF digits on selected DAC channel mask. |
+| `GW_OP_DAC_DTMF_STOP` | none | Stop MCU DTMF generation. |
+| `GW_OP_DAC_DTMF_STATUS` | none | Emit MCU DTMF generator status. |
+| `GW_OP_GPIO_PERIPH_CONFIG` | `gw_gpio_periph_config_payload_t` | Configure optional MCU GPIO peripherals: MT8870 DTMF decoder pins, CH1817 RI input, and CH1817 OH/OFFHK output. |
+| `GW_OP_GPIO_PERIPH_STATUS` | none | Emit MCU GPIO peripheral status. |
+
+## GPIO peripheral config/status
+
+The CM4 server can program optional RP2040 GPIO peripherals at runtime. This avoids reflashing firmware for MT8870 or CH1817 wiring changes.
+
+`gw_gpio_periph_config_payload_t` carries:
+
+- enable flags,
+- MT8870 `StQ/Q1/Q2/Q3/Q4` GPIO numbers and polarity,
+- CH1817 `RI` GPIO input number and polarity,
+- CH1817 `OH/OFFHK` GPIO output number, polarity, and requested drive state,
+- MT8870 debounce and event holdoff timings.
+
+Known-good defaults:
+
+| Signal | RP2040 GPIO | Direction | Polarity |
+|---|---:|---|---|
+| MT8870 `StQ` | 12 | input | active high |
+| MT8870 `Q1` | 27 | input | active high |
+| MT8870 `Q2` | 26 | input | active high |
+| MT8870 `Q3` | 10 | input | active high |
+| MT8870 `Q4` | 11 | input | active high |
+| CH1817 `RI` | 8 | input from CH1817 | active low |
+| CH1817 `OH/OFFHK` | 7 | output to CH1817 | active high |
+
+`gw_gpio_periph_status_payload_t` reports raw/logical MT8870 pins, decoded digit, DTMF event sequence, RI raw/logical state, and OH raw/logical/drive state.
 
 ## Status and Events
 
@@ -196,6 +227,8 @@ Defined event codes include:
 5    rate changed
 100  DAC underrun
 101  DAC flushed
+150  GPIO/MT8870 DTMF digit
+151  GPIO changed
 200  driver fault
 ```
 

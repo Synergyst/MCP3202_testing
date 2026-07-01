@@ -9,7 +9,7 @@
     "best_status": "listening",
     "best_update": "2026-06-25T18:53:29-0500",
     "checksum_ok": false,
-    "confidence": 0.398037658869111,
+    "confidence": 0.3857883921544265,
     "date_time": "",
     "date_time_raw": "",
     "detected": true,
@@ -20,15 +20,15 @@
     ],
     "filter_profile": "fsk.decoder",
     "last_error": "",
-    "last_total_frames_seen": 86127488,
-    "last_update": "2026-07-01T00:37:03-0500",
+    "last_total_frames_seen": 7358976,
+    "last_update": "2026-07-01T02:44:02-0500",
     "message_type": "MDMF (0x80)",
     "name": "",
     "number": "",
-    "raw_bits": "11001110111000110010010100011001000111100110100000110000011010001100001111100011110000101011010100110100100011100000010000000000001100100000010101011111001000110101110110010010000001000110111100001001010110100011000110110100111010111010011000011101100100001101110010110100010001011111011011110100000010001000101101010001010010010011010100010001101111000010000010011100000000100001000110011111001011001100110110110010010000011001011101000011100101001010011110010000111001100010000101001000110000110110010000010010011111110100100101110111011011001100100001100001110000000010011011111000011011100111001",
-    "raw_bytes_hex": "80 02 F5 62 37",
+    "raw_bits": "01010010011111000001001111000111101011010110100001111101100100000100010110101000000111000000010010000111101111110100101100100001010110001101010101111001000010110111001011101011100110110011110011011001111000001100011000011110111101111111111111001110011111011011111110001111100110010101111110100110010010110000110011001100110101100111011011011110000000010110101010111110011010011001111110110011100100011010000000011101000001010000000111011000111000110101000100000001001001100011101101110001110100000000000000001101000000010101000101001000000100100100010101111001001010100000011010100111100000011100000",
+    "raw_bytes_hex": "80 01 45 02",
     "running": true,
-    "sample_rate_hz": 14815,
+    "sample_rate_hz": 14848,
     "selected_channel": 0,
     "settings": {
       "analysis_ms": 500,
@@ -42,7 +42,7 @@
       "space_hz": 2200.0
     },
     "status": "decoded with checksum mismatch",
-    "total_decodes": 22004
+    "total_decodes": 22005
   },
   "caller_id_settings": {
     "analysis_ms": 500,
@@ -59,7 +59,7 @@
     "auto_answer_delay_ms": 0,
     "auto_answer_enabled": false,
     "enabled": true,
-    "offhook": false,
+    "offhook": true,
     "offhook_bcm": 12,
     "offhook_phys": 32,
     "ri_bcm": 21,
@@ -221,7 +221,7 @@
     "recommended_silence_rms": 0.0008,
     "ri_active_low": true,
     "ri_envelope_timeout_ms": 1200,
-    "ri_mode": "envelope",
+    "ri_mode": "pulsed",
     "tone_threshold_scale": 1.0
   },
   "line_state": {
@@ -238,6 +238,44 @@
     "tone_relative_db": -24.0,
     "update_interval_ms": 50,
     "use_ri_corroboration": false
+  },
+  "mcu_peripherals": {
+    "ch1817_signals": {
+      "enabled": true,
+      "oh": {
+        "active_high": true,
+        "gpio": 7,
+        "source": "mcu"
+      },
+      "ri": {
+        "active_high": false,
+        "gpio": 8,
+        "source": "mcu"
+      }
+    },
+    "dtmf_decoder": {
+      "debounce_ms": 2,
+      "enabled": true,
+      "event_holdoff_ms": 25,
+      "history_limit": 64,
+      "pins": {
+        "q1": 27,
+        "q2": 26,
+        "q3": 10,
+        "q4": 11,
+        "stq": 12
+      },
+      "polarity": {
+        "q_active_high": true,
+        "stq_active_high": true
+      },
+      "source": "mcu_mt8870",
+      "validation": {
+        "enabled": true,
+        "raw_poll_hz": 20
+      }
+    },
+    "enabled": true
   },
   "pins": {
     "32": {

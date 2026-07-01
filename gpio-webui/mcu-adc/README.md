@@ -20,6 +20,8 @@ Implemented and validated:
 - GWP1 capabilities/status/control packets.
 - MCU-side MCP4922 DAC backend with GWP1 set-rate, set-format, write-frame, write-block/DATA, start, stop, flush, status, underrun, and capability reporting.
 - MCU-side DTMF generator using fixed 8 kHz synthesis, 32-bit phase accumulators, sample-count timing, midpoint-biased silence, and short click-reducing ramps.
+- MCU-side MT8870 DTMF decoder GPIO monitor with raw pin state, decoded digit events, and host-visible history support.
+- Optional MCU-side CH1817 RI/OH handling: RI is an active-low input from CH1817, OH/OFFHK is an active-high output to CH1817.
 - Host ADC backend selected with `--adc-source rp2040` or persisted config.
 - Web UI ADC source/rate/device controls.
 - Web UI RP2040 diagnostics.
@@ -59,6 +61,20 @@ Default DAC firmware pins use RP2040 `spi1`:
 | 14 VOUTA | DAC A output | Analog output A |
 
 The MCP4922 has no MISO pin. Also connect CM4, RP2040, MCP3202, and MCP4922 grounds together.
+
+Default MT8870 / CH1817 MCU peripheral pins are host-configurable through the CM4 `config.json` top-level `mcu_peripherals` section and WebUI. Firmware defaults are:
+
+| Peripheral signal | RP2040 default | Direction | Default polarity |
+|---|---:|---|---|
+| MT8870 `StQ` / valid strobe | GPIO12 | input | active high |
+| MT8870 `Q1` | GPIO27 | input | active high |
+| MT8870 `Q2` | GPIO26 | input | active high |
+| MT8870 `Q3` | GPIO10 | input | active high |
+| MT8870 `Q4` | GPIO11 | input | active high |
+| CH1817 `RI` | GPIO8 | input from CH1817 | active low |
+| CH1817 `OH` / `OFFHK` | GPIO7 | output to CH1817 | active high |
+
+The MT8870 analog DTMF input source is not assumed by firmware or host software. It may be driven by DAC output during bench tests, a phone keypad, or any other properly conditioned DTMF source.
 
 Recommended analog-side basics:
 
@@ -121,6 +137,8 @@ GWP1 is documented in `../protocol/PROTOCOL.md`. DAC control supports:
 DAC block payloads use `gw_dac_data_payload_t` followed by interleaved samples. For `GW_SAMPLE_U16_LE`, each channel is a little-endian 16-bit value and only the low 12 bits are sent to the MCP4922.
 
 DTMF control uses `GW_OP_DAC_DTMF_PLAY`, `GW_OP_DAC_DTMF_STOP`, and `GW_OP_DAC_DTMF_STATUS`. DTMF is synthesized internally at 8 kHz for accurate telephone keypad frequencies; inactive channels and tone gaps are written as DAC midpoint 2048 rather than raw zero.
+
+MCU peripheral control uses `GW_OP_GPIO_PERIPH_CONFIG` and `GW_OP_GPIO_PERIPH_STATUS`. The CM4 server sends configured MT8870/RI/OH pin mapping, polarity, debounce, and OH drive state. The MCU reports raw MT8870 pins, decoded nibbles/digits, RI input state, and OH output state.
 
 ### Legacy ADC2 packet protocol
 

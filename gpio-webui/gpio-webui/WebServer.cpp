@@ -170,6 +170,11 @@ json mcuPeripheralStatusJson(const McuPeripheralSnapshot& s) {
     return {
         {"connected", s.connected},
         {"status_seen", s.status_seen},
+        {"config_dirty", s.config_dirty},
+        {"config_sent", s.config_sent},
+        {"last_config_send_server_ms", s.last_config_send_server_ms},
+        {"config_apply_count", s.config_apply_count},
+        {"last_config_error", s.last_config_error},
         {"last_status_server_ms", s.last_status_server_ms},
         {"uptime_ms", s.uptime_ms},
         {"config", mcuPeripheralConfigJson(s.config)},
@@ -190,7 +195,7 @@ json mcuPeripheralStatusJson(const McuPeripheralSnapshot& s) {
         }},
         {"ch1817_signals", {
             {"ri", {{"source", s.config.ri.source}, {"raw", s.ri_raw}, {"logical", s.ri_logical}, {"transition_count", s.ri_transition_count}}},
-            {"oh", {{"source", s.config.oh.source}, {"raw", s.oh_raw}, {"logical", s.oh_logical}, {"transition_count", s.oh_transition_count}}}
+            {"oh", {{"source", s.config.oh.source}, {"raw", s.oh_raw}, {"logical", s.oh_logical}, {"drive", s.oh_drive}, {"transition_count", s.oh_transition_count}}}
         }}
     };
 }
@@ -687,7 +692,7 @@ const char* HTML_UI = R"html(
     <div class="card cid-card" id="telephonyCard">
         <div class="card-header"><div><span class="pin-title">CH1817 DAA</span><span class="bcm-tag">OFFHK + RI</span></div><span class="status-pill" id="chStatus">-</span></div>
         <div class="cid-grid">
-            <div class="cid-item">RI level<b id="chRiLevel">-</b></div><div class="cid-item">Ringing<b id="chRinging">-</b></div><div class="cid-item">RI frequency<b id="chFreq">-</b></div><div class="cid-item">Hook state<b id="chHook">-</b></div>
+            <div class="cid-item">RI level<b id="chRiLevel">-</b></div><div class="cid-item">RI source<b id="chRiSource">-</b></div><div class="cid-item">Ringing<b id="chRinging">-</b></div><div class="cid-item">RI frequency<b id="chFreq">-</b></div><div class="cid-item">Hook state<b id="chHook">-</b></div>
         </div>
         <div class="config-panel record-panel cid-tune">
             <button onclick="setChOffhook(false)">Go On-Hook</button><button onclick="setChOffhook(true)">Go Off-Hook</button>
@@ -823,7 +828,32 @@ const char* HTML_UI = R"html(
                 <div class="stat-row"><b>Decoder:</b> <span id="dtmfDecEnabled">-</span> <b>Source:</b> <span id="dtmfDecSource">-</span> <b>Active/StQ:</b> <span id="dtmfDecActive">-</span> <b>Current:</b> <span id="dtmfDecDigit">-</span></div>
                 <div class="stat-row">Raw pins: StQ=<span id="mtStqRaw">-</span> Q1=<span id="mtQ1Raw">-</span> Q2=<span id="mtQ2Raw">-</span> Q3=<span id="mtQ3Raw">-</span> Q4=<span id="mtQ4Raw">-</span> bits=<span id="mtBits">----</span> seq=<span id="mtSeq">0</span></div>
                 <div class="stat-row">RI source=<span id="mcuRiSource">-</span> raw=<span id="mcuRiRaw">-</span> logical=<span id="mcuRiLogical">-</span> transitions=<span id="mcuRiTransitions">0</span> · OH source=<span id="mcuOhSource">-</span> raw=<span id="mcuOhRaw">-</span> logical=<span id="mcuOhLogical">-</span> transitions=<span id="mcuOhTransitions">0</span></div>
+                <div class="stat-row">MCU config: dirty=<span id="mcuCfgDirty">-</span> sent=<span id="mcuCfgSent">-</span> applies=<span id="mcuCfgApplies">0</span> last error=<span id="mcuCfgError">-</span></div>
                 <span class="record-help">The MT8870 analog DTMF input is not assumed by software. Generate validation tones from any properly conditioned source; DAC CH1 is only bench context if you wire it that way.</span>
+                <div class="config-panel record-panel" style="padding:10px;">
+                    <label><input type="checkbox" id="mcuPeriphEnabled"> MCU peripherals enabled</label>
+                    <label><input type="checkbox" id="mcuDtmfEnabled"> MT8870 enabled</label>
+                    <label>StQ GP<input type="number" id="mcuStqPin" min="0" max="29" value="12"></label>
+                    <label>Q1 GP<input type="number" id="mcuQ1Pin" min="0" max="29" value="27"></label>
+                    <label>Q2 GP<input type="number" id="mcuQ2Pin" min="0" max="29" value="26"></label>
+                    <label>Q3 GP<input type="number" id="mcuQ3Pin" min="0" max="29" value="10"></label>
+                    <label>Q4 GP<input type="number" id="mcuQ4Pin" min="0" max="29" value="11"></label>
+                    <label><input type="checkbox" id="mcuStqActiveHigh" checked> StQ active high</label>
+                    <label><input type="checkbox" id="mcuQActiveHigh" checked> Q active high</label>
+                    <label>Debounce <input type="number" id="mcuDebounceMs" min="0" max="1000" value="2"> ms</label>
+                    <label>Holdoff <input type="number" id="mcuHoldoffMs" min="0" max="10000" value="25"> ms</label>
+                    <label>History <input type="number" id="mcuHistoryLimit" min="1" max="512" value="64"></label>
+                    <label>RI source <select id="mcuRiSourceCfg"><option value="cm4">CM4</option><option value="mcu">MCU</option><option value="disabled">Disabled</option></select></label>
+                    <label>RI GP<input type="number" id="mcuRiPin" min="0" max="29" value="8"></label>
+                    <label><input type="checkbox" id="mcuRiActiveHigh"> RI active high</label>
+                    <label>OH source <select id="mcuOhSourceCfg"><option value="cm4">CM4</option><option value="mcu">MCU</option><option value="disabled">Disabled</option></select></label>
+                    <label>OH GP<input type="number" id="mcuOhPin" min="0" max="29" value="7"></label>
+                    <label><input type="checkbox" id="mcuOhActiveHigh" checked> OH active high</label>
+                    <button onclick="applyMcuPeripheralConfig()">Apply MCU Peripheral Config</button>
+                    <button onclick="reloadMcuPeripheralConfig()">Reload From Server</button>
+                    <button onclick="applySuggestedMcuMapping()" id="mcuApplySuggestionBtn" disabled>Apply Suggested Mapping</button>
+                    <span class="record-status" id="mcuPeriphConfigStatus"></span>
+                </div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
                     <label>Expected sequence <input class="dtmf-sequence" type="text" id="dtmfValidationExpected" placeholder="1234567890*#ABCD"></label>
                     <button onclick="startDtmfValidation()">Start Validation</button>
@@ -1118,7 +1148,7 @@ const char* HTML_UI = R"html(
             try {
                 const res = await fetch('/api/telephony/ch1817'); const data = await res.json();
                 const st = document.getElementById('chStatus'); st.textContent = data.ringing ? 'RINGING' : (data.offhook ? 'OFF-HOOK' : 'IDLE'); st.className = `status-pill ${data.ringing ? 'status-ok' : 'status-bad'}`;
-                document.getElementById('chRiLevel').textContent = data.ri_level_text || '-'; document.getElementById('chRinging').textContent = data.ringing ? 'YES' : 'NO'; document.getElementById('chFreq').textContent = `${(data.ri_frequency_hz || 0).toFixed(2)} Hz`; document.getElementById('chHook').textContent = data.offhook ? 'off-hook' : 'on-hook';
+                document.getElementById('chRiLevel').textContent = data.ri_level_text || '-'; document.getElementById('chRiSource').textContent = data.ri_source || 'cm4'; document.getElementById('chRinging').textContent = data.ringing ? 'YES' : 'NO'; document.getElementById('chFreq').textContent = `${(data.ri_frequency_hz || 0).toFixed(2)} Hz`; document.getElementById('chHook').textContent = data.offhook ? 'off-hook' : 'on-hook';
                 fillCh1817Settings(data.settings);
                 document.getElementById('chHelp').textContent = data.last_error || data.help || '';
             } catch(err) { document.getElementById('chHelp').textContent = `CH1817 error: ${err.message || err}`; }
@@ -1228,7 +1258,16 @@ const char* HTML_UI = R"html(
             catch(err){ lsGuard.failApply(`Failed: ${err.message||err}`); }
         }
 
-        async function setChOffhook(offhook) { await fetch('/api/telephony/ch1817/offhook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offhook})}); fetchTelephony(); fetchLineState(); }
+        async function setChOffhook(offhook) {
+            const st = document.getElementById('chApplyStatus'); if (st) st.textContent = offhook ? 'Going off-hook...' : 'Going on-hook...';
+            try {
+                const res = await fetch('/api/telephony/ch1817/offhook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offhook})});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'failed');
+                if (st) st.textContent = offhook ? 'Off-hook' : 'On-hook';
+            } catch (err) { if (st) st.textContent = `Failed: ${err.message || err}`; }
+            fetchTelephony(); fetchLineState();
+        }
         async function applyCh1817Settings() {
             const st=document.getElementById('chApplyStatus'); st.textContent='Applying...';
             try { const res=await fetch('/api/telephony/ch1817/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_answer_enabled:document.getElementById('chAutoAnswer').checked,auto_answer_delay_ms:parseInt(document.getElementById('chAutoDelay').value||'0',10)})}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'failed'); st.textContent='Applied'; fetchTelephony(); }
@@ -1732,6 +1771,7 @@ const char* HTML_UI = R"html(
         const dacGuard = makeSettingsGuard(['dacConfigEnabled','dacConfigTransport','dacConfigRp2040Dev','dacConfigRate'], 'dacConfigStatus');
         const playbackGuard = makeSettingsGuard(['playbackFile','playbackUploadSelect','playbackChannel','playbackUseProfiles','playbackGain','playbackLoop'], 'playbackStatus');
         const dtmfGuard = makeSettingsGuard(['dtmfSequence','dtmfToneMs','dtmfGapMs','dtmfAmplitude','dtmfChannel'], 'dtmfStatus');
+        const mcuPeriphGuard = makeSettingsGuard(['mcuPeriphEnabled','mcuDtmfEnabled','mcuStqPin','mcuQ1Pin','mcuQ2Pin','mcuQ3Pin','mcuQ4Pin','mcuStqActiveHigh','mcuQActiveHigh','mcuDebounceMs','mcuHoldoffMs','mcuHistoryLimit','mcuRiSourceCfg','mcuRiPin','mcuRiActiveHigh','mcuOhSourceCfg','mcuOhPin','mcuOhActiveHigh'], 'mcuPeriphConfigStatus');
         function wireDtmfPad() {
             dtmfGuard.wire();
             document.querySelectorAll('#dtmfPad button[data-dtmf]').forEach(btn => {
@@ -1883,11 +1923,73 @@ const char* HTML_UI = R"html(
         }
 
 
+
+        let mcuSuggestedMapping = null;
+        function getVal(id, fallback='') { const el=document.getElementById(id); return el ? el.value : fallback; }
+        function getIntVal(id, fallback=0) { const v=parseInt(getVal(id, String(fallback)), 10); return Number.isFinite(v) ? v : fallback; }
+        function getChecked(id, fallback=false) { const el=document.getElementById(id); return el ? !!el.checked : fallback; }
+        function setInputValue(id, value) { const el=document.getElementById(id); if (el && document.activeElement !== el) el.value = value; }
+        function setInputChecked(id, value) { const el=document.getElementById(id); if (el && document.activeElement !== el) el.checked = !!value; }
+        function fillMcuPeripheralConfig(mp, force=false) {
+            if (!mp || !mp.config || !mcuPeriphGuard.shouldFill(force)) return;
+            const cfg = mp.config || {}; const dec = cfg.dtmf_decoder || {}; const pins = dec.pins || {}; const pol = dec.polarity || {}; const sig = cfg.ch1817_signals || {}; const ri = sig.ri || {}; const oh = sig.oh || {};
+            setInputChecked('mcuPeriphEnabled', cfg.enabled !== false);
+            setInputChecked('mcuDtmfEnabled', dec.enabled !== false);
+            setInputValue('mcuStqPin', pins.stq ?? 12); setInputValue('mcuQ1Pin', pins.q1 ?? 27); setInputValue('mcuQ2Pin', pins.q2 ?? 26); setInputValue('mcuQ3Pin', pins.q3 ?? 10); setInputValue('mcuQ4Pin', pins.q4 ?? 11);
+            setInputChecked('mcuStqActiveHigh', pol.stq_active_high !== false); setInputChecked('mcuQActiveHigh', pol.q_active_high !== false);
+            setInputValue('mcuDebounceMs', dec.debounce_ms ?? 2); setInputValue('mcuHoldoffMs', dec.event_holdoff_ms ?? 25); setInputValue('mcuHistoryLimit', dec.history_limit ?? 64);
+            setInputValue('mcuRiSourceCfg', ri.source || 'cm4'); setInputValue('mcuRiPin', ri.gpio ?? 8); setInputChecked('mcuRiActiveHigh', ri.active_high === true);
+            setInputValue('mcuOhSourceCfg', oh.source || 'cm4'); setInputValue('mcuOhPin', oh.gpio ?? 7); setInputChecked('mcuOhActiveHigh', oh.active_high !== false);
+            if (force) mcuPeriphGuard.clearDirty('');
+        }
+        function mcuPeripheralBodyFromUi() {
+            return {
+                enabled: getChecked('mcuPeriphEnabled', true),
+                dtmf_decoder: {
+                    enabled: getChecked('mcuDtmfEnabled', true), source: 'mcu_mt8870',
+                    pins: { stq:getIntVal('mcuStqPin',12), q1:getIntVal('mcuQ1Pin',27), q2:getIntVal('mcuQ2Pin',26), q3:getIntVal('mcuQ3Pin',10), q4:getIntVal('mcuQ4Pin',11) },
+                    polarity: { stq_active_high:getChecked('mcuStqActiveHigh', true), q_active_high:getChecked('mcuQActiveHigh', true) },
+                    debounce_ms: getIntVal('mcuDebounceMs',2), event_holdoff_ms:getIntVal('mcuHoldoffMs',25), history_limit:getIntVal('mcuHistoryLimit',64),
+                    validation: { enabled:true, raw_poll_hz:20 }
+                },
+                ch1817_signals: {
+                    enabled: true,
+                    ri: { source:getVal('mcuRiSourceCfg','cm4'), gpio:getIntVal('mcuRiPin',8), active_high:getChecked('mcuRiActiveHigh', false) },
+                    oh: { source:getVal('mcuOhSourceCfg','cm4'), gpio:getIntVal('mcuOhPin',7), active_high:getChecked('mcuOhActiveHigh', true) }
+                }
+            };
+        }
+        async function applyMcuPeripheralConfig(bodyOverride=null) {
+            mcuPeriphGuard.beginApply();
+            try {
+                const body = bodyOverride || mcuPeripheralBodyFromUi();
+                const res = await fetch('/api/mcu/peripherals/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+                const data = await res.json(); if (!res.ok) throw new Error(data.error || 'failed');
+                mcuPeriphGuard.finishApply('Applied');
+                fetchStatus();
+            } catch(err) { mcuPeriphGuard.failApply(`Failed: ${err.message || err}`); }
+        }
+        function reloadMcuPeripheralConfig() { mcuPeriphGuard.clearDirty('Reloaded'); fetchStatus(); }
+        async function applySuggestedMcuMapping() {
+            if (!mcuSuggestedMapping) return;
+            const body = mcuPeripheralBodyFromUi();
+            body.dtmf_decoder.pins.q1 = mcuSuggestedMapping.q1;
+            body.dtmf_decoder.pins.q2 = mcuSuggestedMapping.q2;
+            body.dtmf_decoder.pins.q3 = mcuSuggestedMapping.q3;
+            body.dtmf_decoder.pins.q4 = mcuSuggestedMapping.q4;
+            await applyMcuPeripheralConfig(body);
+        }
+
         let dtmfValidation = { active:false, expected:'', startSeq:0 };
         const normalBitsByDigit = {'1':'0001','2':'0010','3':'0011','4':'0100','5':'0101','6':'0110','7':'0111','8':'1000','9':'1001','0':'1010','*':'1011','#':'1100','A':'1101','B':'1110','C':'1111','D':'0000'};
         function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
         function updateMcuPeripheralUi(data) {
             const mp = data && data.mcu_peripherals; if (!mp) return;
+            fillMcuPeripheralConfig(mp, false);
+            setText('mcuCfgDirty', mp.config_dirty ? 'yes' : 'no');
+            setText('mcuCfgSent', mp.config_sent ? 'yes' : 'no');
+            setText('mcuCfgApplies', mp.config_apply_count || 0);
+            setText('mcuCfgError', mp.last_config_error || '-');
             const dec = mp.dtmf_decoder || {}; const raw = dec.raw || {}; const sig = mp.ch1817_signals || {};
             setText('dtmfDecEnabled', dec.enabled ? 'yes' : 'no');
             setText('dtmfDecSource', dec.source || '-');
@@ -1900,6 +2002,33 @@ const char* HTML_UI = R"html(
             setText('mcuOhSource', oh.source || '-'); setText('mcuOhRaw', oh.raw ? '1' : '0'); setText('mcuOhLogical', oh.logical ? '1' : '0'); setText('mcuOhTransitions', oh.transition_count || 0);
             renderDtmfDecoderHistory(dec.history || []);
         }
+
+        function bitsStringToNum(s) { return parseInt(s || '0', 2) & 0x0F; }
+        function inferQPinMapping(events, expected) {
+            if (!events.length || !expected) return null;
+            const perms = [[0,1,2,3],[0,1,3,2],[0,2,1,3],[0,2,3,1],[0,3,1,2],[0,3,2,1],[1,0,2,3],[1,0,3,2],[1,2,0,3],[1,2,3,0],[1,3,0,2],[1,3,2,0],[2,0,1,3],[2,0,3,1],[2,1,0,3],[2,1,3,0],[2,3,0,1],[2,3,1,0],[3,0,1,2],[3,0,2,1],[3,1,0,2],[3,1,2,0],[3,2,0,1],[3,2,1,0]];
+            const samples = [];
+            for (let i=0; i<events.length && i<expected.length; ++i) {
+                const expBits = normalBitsByDigit[expected[i]];
+                if (!expBits || !events[i].raw_q_bits_binary) continue;
+                samples.push({e: bitsStringToNum(expBits), o: bitsStringToNum(events[i].raw_q_bits_binary)});
+            }
+            if (samples.length < 2) return null;
+            let best = null;
+            for (const p of perms) {
+                let score = 0;
+                for (const sm of samples) {
+                    let remap = 0;
+                    for (let bit=0; bit<4; ++bit) if (sm.o & (1 << p[bit])) remap |= (1 << bit);
+                    if (remap === sm.e) score++;
+                }
+                if (!best || score > best.score) best = {p, score};
+            }
+            if (!best || best.score < Math.max(2, Math.ceil(samples.length * 0.75))) return null;
+            const pins = [getIntVal('mcuQ1Pin',27), getIntVal('mcuQ2Pin',26), getIntVal('mcuQ3Pin',10), getIntVal('mcuQ4Pin',11)];
+            return { q1:pins[best.p[0]], q2:pins[best.p[1]], q3:pins[best.p[2]], q4:pins[best.p[3]], score:best.score, total:samples.length };
+        }
+
         function renderDtmfDecoderHistory(history) {
             const tbody = document.getElementById('dtmfDecoderHistory'); if (!tbody) return;
             if (!history.length) { tbody.innerHTML = '<tr><td colspan="6">No decoded tones yet.</td></tr>'; return; }
@@ -1917,9 +2046,18 @@ const char* HTML_UI = R"html(
             });
             tbody.innerHTML = rows.join('');
             const help = document.getElementById('dtmfMappingHelp');
+            const btn = document.getElementById('mcuApplySuggestionBtn');
+            mcuSuggestedMapping = null;
             if (help) {
-                help.textContent = mismatches.length ? mismatches.slice(0,5).map(m => `Expected ${m.expected} normally bits ${normalBitsByDigit[m.expected] || '????'}, observed ${m.observed || '?'} bits ${m.raw}.`).join(' ') + ' This may indicate Q pins are swapped or inverted.' : '';
+                let msg = mismatches.length ? mismatches.slice(0,5).map(m => `Expected ${m.expected} normally bits ${normalBitsByDigit[m.expected] || '????'}, observed ${m.observed || '?'} bits ${m.raw}.`).join(' ') + ' This may indicate Q pins are swapped or inverted.' : '';
+                const suggestion = inferQPinMapping(events, expected);
+                if (suggestion) {
+                    mcuSuggestedMapping = suggestion;
+                    msg += ` Suggested mapping: Q1=GP${suggestion.q1}, Q2=GP${suggestion.q2}, Q3=GP${suggestion.q3}, Q4=GP${suggestion.q4} (${suggestion.score}/${suggestion.total} samples).`;
+                }
+                help.textContent = msg;
             }
+            if (btn) btn.disabled = !mcuSuggestedMapping;
             const st = document.getElementById('dtmfDecoderStatus');
             if (st && dtmfValidation.active) st.textContent = `Validation: ${Math.min(events.length, expected.length)}/${expected.length} captured`;
         }
@@ -1982,7 +2120,7 @@ const char* HTML_UI = R"html(
         if (ADC_ENABLED) { setInterval(fetchAdcScope, 120); setInterval(fetchCallerId, 1000); setInterval(fetchLineState, 500); }
         setInterval(fetchTelephony, 500); setInterval(fetchTelephonyCoordinator, 500); setInterval(fetchTelephonyDiagnostics, 1500);
         setInterval(fetchPlaybackStatus, 500);
-        window.onload = () => { restoreSimpleUiPrefs(); selectTab(loadUiPref('activeTab', 'scope')); fetchStatus(); wireCallerIdTuneDirty(); wireSettingsGuards(); wireAdcConfigDirty(); dacGuard.wire(); playbackGuard.wire(); filterProfileGuard.wire(); wireDtmfPad(); refreshPlaybackUploads(true); if (ADC_ENABLED) { reloadFilterProfiles(true); loadAudioModules().then(() => fetchAdcScope()); fetchCallerId(); fetchLineState(); } fetchTelephony(); fetchTelephonyCoordinator(); fetchTelephonyDiagnostics(); };
+        window.onload = () => { restoreSimpleUiPrefs(); selectTab(loadUiPref('activeTab', 'scope')); fetchStatus(); wireCallerIdTuneDirty(); wireSettingsGuards(); wireAdcConfigDirty(); dacGuard.wire(); playbackGuard.wire(); filterProfileGuard.wire(); mcuPeriphGuard.wire(); wireDtmfPad(); refreshPlaybackUploads(true); if (ADC_ENABLED) { reloadFilterProfiles(true); loadAudioModules().then(() => fetchAdcScope()); fetchCallerId(); fetchLineState(); } fetchTelephony(); fetchTelephonyCoordinator(); fetchTelephonyDiagnostics(); };
     </script>
 </body>
 </html>
@@ -2329,14 +2467,10 @@ void WebServer::setup_routes() {
             McuPeripheralConfig cfg = mcuPeripheralConfigFromJson(body.contains("mcu_peripherals") ? body : json{{"mcu_peripherals", body}}, adc_sampler->mcuPeripheralConfig());
             {
                 std::lock_guard<std::mutex> cfg_lock(context->config_mutex);
-                json root;
-                { std::ifstream f(context->config_path); if (f.is_open()) { try { f >> root; } catch (...) { root = json::object(); } } }
-                if (!root.is_object()) root = json::object();
-                root["mcu_peripherals"] = mcuPeripheralConfigToJson(cfg);
-                std::ofstream out(context->config_path);
-                if (out.is_open()) out << root.dump(2);
+                persistMcuPeripheralConfigToFile(context->config_path, cfg);
             }
             adc_sampler->updateMcuPeripheralConfig(cfg);
+            if (ch1817_driver) ch1817_driver->setMcuPeripheralConfig(cfg);
             res.set_content(json{{"status", "ok"}, {"mcu_peripherals", mcuPeripheralStatusJson(adc_sampler->mcuPeripheralSnapshot())}}.dump(), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
