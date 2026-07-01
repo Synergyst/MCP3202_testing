@@ -9,21 +9,26 @@
     "best_status": "listening",
     "best_update": "2026-06-25T18:53:29-0500",
     "checksum_ok": false,
-    "confidence": 0.3579603950498621,
+    "confidence": 0.3679620528977887,
     "date_time": "",
     "date_time_raw": "",
     "detected": true,
     "enabled": true,
+    "filter_effects": [
+      "dc_block",
+      "bell202_bandpass"
+    ],
+    "filter_profile": "fsk.decoder",
     "last_error": "",
-    "last_total_frames_seen": 519465216,
-    "last_update": "2026-06-30T20:24:42-0500",
-    "message_type": "SDMF (0x04)",
+    "last_total_frames_seen": 9629696,
+    "last_update": "2026-06-30T22:36:37-0500",
+    "message_type": "MDMF (0x80)",
     "name": "",
     "number": "",
-    "raw_bits": "01100100110000001001001001010000011100000010000111101110110011000101000001100110111001001011010010011011001001000001001000110101111011001110010110100100000000001111101101000110011001111100001000010101000110000100010011010010001010110110100000101101001101101101001011011111100010000010010000001001111011100110000110111111111100101000101000001001001100101010101111000001010010100100010110111110101010101111100000100001101101110111010000011011001101010001010001001001110010100011100110110000000101110000001100111100001111010001001000011011100101110111001000111000110111110001001100101100000001111000100",
-    "raw_bytes_hex": "04 02 DE 86 FF",
+    "raw_bits": "01000100001100000000110000000001000000101100000111011000000101001011000011000000010001000010110010100111010000011100001000100000000110001100001000010011001011011111100000010000000100100110000000000011001111010001110000010110000001111100000000100000100001000001111101111111101000110001000000110101000001010011000010000000010000001101000111100101110010000100100100000100000100100110011000001000100000111001101000000100110000110010001101101010100001000011010100000000101011001110100000011000001110001011000000001001000101100010101000010001100001011000000111001000011101000101011010000101001001110001010",
+    "raw_bytes_hex": "80 00 A0",
     "running": true,
-    "sample_rate_hz": 14814,
+    "sample_rate_hz": 14834,
     "selected_channel": 0,
     "settings": {
       "analysis_ms": 500,
@@ -37,7 +42,7 @@
       "space_hz": 2200.0
     },
     "status": "decoded with checksum mismatch",
-    "total_decodes": 21998
+    "total_decodes": 22001
   },
   "caller_id_settings": {
     "analysis_ms": 500,
@@ -74,7 +79,7 @@
   "dac_mosi_bcm": "10",
   "dac_rp2040_dev": "/dev/ttyACM0",
   "dac_sample_format": "3",
-  "dac_sample_rate_hz": "16000",
+  "dac_sample_rate_hz": "14800",
   "dac_shdn_bcm": "-1",
   "dac_spi_dev": "/dev/spidev0.0",
   "dac_spi_speed_hz": "10000000",
@@ -83,6 +88,131 @@
   "dac_transport": "rp2040",
   "dac_vref_a": "3.300000",
   "dac_vref_b": "3.300000",
+  "filter_profiles": {
+    "adc.graph.ch0": {
+      "effects": [
+        "dc_block",
+        "pots_bandpass",
+        "hum_notch_60",
+        "hum_notch_120",
+        "voice_agc",
+        "normalize",
+        "soft_clip",
+        "rnnoise"
+      ],
+      "enabled": true
+    },
+    "adc.graph.ch1": {
+      "effects": [],
+      "enabled": true
+    },
+    "adc.wav.ch0": {
+      "effects": [
+        "dc_block",
+        "pots_bandpass",
+        "hum_notch_60",
+        "hum_notch_120",
+        "voice_agc",
+        "normalize",
+        "soft_clip",
+        "rnnoise"
+      ],
+      "enabled": true
+    },
+    "adc.wav.ch1": {
+      "effects": [],
+      "enabled": true
+    },
+    "adc.wav.mix": {
+      "effects": [
+        "dc_block",
+        "pots_bandpass",
+        "hum_notch_60",
+        "hum_notch_120",
+        "voice_agc",
+        "normalize",
+        "soft_clip"
+      ],
+      "enabled": true
+    },
+    "adc.wav.stereo": {
+      "effects": [
+        "dc_block",
+        "pots_bandpass",
+        "hum_notch_60",
+        "hum_notch_120",
+        "voice_agc",
+        "normalize",
+        "soft_clip"
+      ],
+      "enabled": true
+    },
+    "dac.dtmf": {
+      "effects": [
+        "dc_block",
+        "pots_bandpass",
+        "hum_notch_60",
+        "hum_notch_120",
+        "voice_agc",
+        "normalize",
+        "soft_clip"
+      ],
+      "enabled": true
+    },
+    "dac.playback.ch0": {
+      "effects": [
+        "dc_block",
+        "pots_bandpass",
+        "hum_notch_60",
+        "hum_notch_120",
+        "voice_agc",
+        "normalize",
+        "soft_clip"
+      ],
+      "enabled": true
+    },
+    "dac.playback.ch1": {
+      "effects": [
+        "dc_block",
+        "pots_bandpass",
+        "hum_notch_60",
+        "hum_notch_120",
+        "voice_agc",
+        "normalize",
+        "soft_clip"
+      ],
+      "enabled": true
+    },
+    "dac.playback.stereo": {
+      "effects": [
+        "dc_block",
+        "pots_bandpass",
+        "hum_notch_60",
+        "hum_notch_120",
+        "voice_agc",
+        "normalize",
+        "soft_clip"
+      ],
+      "enabled": true
+    },
+    "fsk.decoder": {
+      "effects": [
+        "dc_block",
+        "bell202_bandpass"
+      ],
+      "enabled": true
+    },
+    "line_state.detector": {
+      "effects": [
+        "dc_block"
+      ],
+      "enabled": true
+    },
+    "telephony.diagnostics": {
+      "effects": [],
+      "enabled": true
+    }
+  },
   "fsk_source": "software_adc",
   "hardware_calibration": {
     "rcv_idle_peak": 0.002,
@@ -98,16 +228,16 @@
     "analysis_window_ms": 100,
     "cadence_history_ms": 8000,
     "enabled": true,
-    "min_rms": 0.017769589515327623,
+    "min_rms": 0.013970292999829907,
     "prefer_ri_for_ring_start": true,
     "region": "nanp",
     "release_stable_windows": 5,
     "required_stable_windows": 3,
-    "silence_rms": 0.006663596068247859,
+    "silence_rms": 0.005238859874936215,
     "tone_detect_threshold": 0.08,
     "tone_relative_db": -24.0,
     "update_interval_ms": 50,
-    "use_ri_corroboration": true
+    "use_ri_corroboration": false
   },
   "pins": {
     "32": {
@@ -135,19 +265,19 @@
   "telephony_coordinator": {
     "allow_ri_only_ring": true,
     "auto_answer_delay_ms": 6500,
-    "auto_answer_enabled": true,
+    "auto_answer_enabled": false,
     "auto_hangup_after_disconnect_ms": 14500,
     "auto_hangup_after_reorder_ms": 3000,
     "auto_hangup_after_silence_ms": 5000,
     "auto_hangup_after_unknown_tone_ms": 3000,
     "auto_hangup_after_warning_ms": 5500,
-    "auto_hangup_enabled": true,
+    "auto_hangup_enabled": false,
     "auto_hangup_on_busy_after_call": true,
     "auto_hangup_on_receiver_offhook_warning": true,
     "auto_hangup_on_reorder_after_call": true,
     "auto_hangup_on_unknown_tone": true,
     "caller_id_before_auto_answer": false,
-    "enabled": true,
+    "enabled": false,
     "max_caller_id_wait_ms": 7000,
     "min_rings_before_answer": 2,
     "remote_hangup_silence_ms": 5000,
