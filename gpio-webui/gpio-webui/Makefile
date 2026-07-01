@@ -56,7 +56,7 @@ $(TELCO_TEST): $(TELCO_TEST_OBJS)
 $(TELDIAG_TEST): $(TELDIAG_TEST_OBJS)
 	$(CXX) $(CXXFLAGS) -I. -o $(TELDIAG_TEST) $(TELDIAG_TEST_OBJS) $(LDFLAGS)
 
-main.o: main.cpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp WebServer.hpp SystemContext.hpp SharedSignalBuffer.hpp AdcSampler.hpp MCP3202.hpp MCP4922.hpp DacOutput.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp FilterProfileManager.hpp AudioPlaybackService.hpp HeaderPins.hpp httplib.h
+main.o: main.cpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp WebServer.hpp SystemContext.hpp SharedSignalBuffer.hpp AdcSampler.hpp McuPeripheral.hpp MCP3202.hpp MCP4922.hpp DacOutput.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp FilterProfileManager.hpp AudioPlaybackService.hpp HeaderPins.hpp httplib.h
 	$(CXX) $(CXXFLAGS) -I. -c main.cpp -o main.o
 
 ConfigManager.o: ConfigManager.cpp ConfigManager.hpp PinConfig.hpp
@@ -74,7 +74,7 @@ MCP4922.o: MCP4922.cpp MCP4922.hpp
 DacOutput.o: DacOutput.cpp DacOutput.hpp MCP4922.hpp AdcSampler.hpp GwProtocol.hpp GwTransport.hpp ../protocol/gw_protocol.h
 	$(CXX) $(CXXFLAGS) -I. -c DacOutput.cpp -o DacOutput.o
 
-AdcSampler.o: AdcSampler.cpp AdcSampler.hpp MCP3202.hpp SharedSignalBuffer.hpp GwProtocol.hpp ../protocol/gw_protocol.h
+AdcSampler.o: AdcSampler.cpp AdcSampler.hpp MCP3202.hpp SharedSignalBuffer.hpp McuPeripheral.hpp GwProtocol.hpp ../protocol/gw_protocol.h
 	$(CXX) $(CXXFLAGS) -I. -c AdcSampler.cpp -o AdcSampler.o
 
 GwProtocol.o: GwProtocol.cpp GwProtocol.hpp ../protocol/gw_protocol.h
@@ -140,7 +140,7 @@ telephony_coordinator_selftest.o: telephony_coordinator_selftest.cpp TelephonyCo
 telephony_diagnostics_selftest.o: telephony_diagnostics_selftest.cpp TelephonyDiagnostics.hpp
 	$(CXX) $(CXXFLAGS) -I. -c telephony_diagnostics_selftest.cpp -o telephony_diagnostics_selftest.o
 
-WebServer.o: WebServer.cpp WebServer.hpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp SystemContext.hpp AdcSampler.hpp DacOutput.hpp MCP3202.hpp MCP4922.hpp AudioProcessing.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp FilterProfileManager.hpp AudioPlaybackService.hpp SharedSignalBuffer.hpp httplib.h
+WebServer.o: WebServer.cpp WebServer.hpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp SystemContext.hpp AdcSampler.hpp McuPeripheral.hpp DacOutput.hpp MCP3202.hpp MCP4922.hpp AudioProcessing.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp FilterProfileManager.hpp AudioPlaybackService.hpp SharedSignalBuffer.hpp httplib.h
 	$(CXX) $(CXXFLAGS) -I. -c WebServer.cpp -o WebServer.o
 
 clean:

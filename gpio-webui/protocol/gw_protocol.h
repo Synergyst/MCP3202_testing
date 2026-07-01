@@ -100,7 +100,9 @@ typedef enum {
     GW_OP_DAC_GET_STATUS    = 0x0107,
     GW_OP_DAC_DTMF_PLAY     = 0x0110,
     GW_OP_DAC_DTMF_STOP     = 0x0111,
-    GW_OP_DAC_DTMF_STATUS   = 0x0112
+    GW_OP_DAC_DTMF_STATUS   = 0x0112,
+    GW_OP_GPIO_PERIPH_CONFIG = 0x0200,
+    GW_OP_GPIO_PERIPH_STATUS = 0x0201
 } gw_opcode_t;
 
 typedef enum {
@@ -111,6 +113,8 @@ typedef enum {
     GW_EVENT_RATE_CHANGED    = 5,
     GW_EVENT_DAC_UNDERRUN    = 100,
     GW_EVENT_DAC_FLUSHED     = 101,
+    GW_EVENT_GPIO_DTMF_DIGIT  = 150,
+    GW_EVENT_GPIO_CHANGED     = 151,
     GW_EVENT_DRIVER_FAULT    = 200
 } gw_event_code_t;
 
@@ -229,6 +233,51 @@ typedef struct GW_PACKED {
 } gw_dtmf_status_payload_t;
 
 typedef struct GW_PACKED {
+    uint8_t  enabled;
+    uint8_t  dtmf_enabled;
+    uint8_t  stq_gpio;
+    uint8_t  q1_gpio;
+    uint8_t  q2_gpio;
+    uint8_t  q3_gpio;
+    uint8_t  q4_gpio;
+    uint8_t  stq_active_high;
+    uint8_t  q_active_high;
+    uint8_t  ri_enabled;
+    uint8_t  ri_gpio;
+    uint8_t  ri_active_high;
+    uint8_t  oh_enabled;
+    uint8_t  oh_gpio;
+    uint8_t  oh_active_high;
+    uint8_t  reserved0;
+    uint16_t debounce_ms;
+    uint16_t event_holdoff_ms;
+} gw_gpio_periph_config_payload_t;
+
+typedef struct GW_PACKED {
+    uint32_t uptime_ms;
+    uint32_t dtmf_sequence;
+    uint32_t dtmf_event_ms;
+    uint32_t ri_transition_count;
+    uint32_t oh_transition_count;
+    uint8_t  enabled;
+    uint8_t  dtmf_enabled;
+    uint8_t  dtmf_active;
+    uint8_t  stq_raw;
+    uint8_t  q1_raw;
+    uint8_t  q2_raw;
+    uint8_t  q3_raw;
+    uint8_t  q4_raw;
+    uint8_t  raw_q_bits;
+    char     decoded_digit;
+    uint8_t  ri_raw;
+    uint8_t  ri_logical;
+    uint8_t  oh_raw;
+    uint8_t  oh_logical;
+    uint8_t  reserved0;
+    uint8_t  reserved1;
+} gw_gpio_periph_status_payload_t;
+
+typedef struct GW_PACKED {
     uint32_t protocol_version;
     uint32_t firmware_version;
     uint32_t device_class_mask;
@@ -259,6 +308,8 @@ static_assert(sizeof(gw_ctrl_resp_payload_t) == 8, "gw_ctrl_resp_payload_t must 
 static_assert(sizeof(gw_time_sync_payload_t) == 12, "gw_time_sync_payload_t must be 12 bytes");
 static_assert(sizeof(gw_dtmf_play_payload_t) == 72, "gw_dtmf_play_payload_t must be 72 bytes");
 static_assert(sizeof(gw_dtmf_status_payload_t) == 12, "gw_dtmf_status_payload_t must be 12 bytes");
+static_assert(sizeof(gw_gpio_periph_config_payload_t) == 20, "gw_gpio_periph_config_payload_t must be 20 bytes");
+static_assert(sizeof(gw_gpio_periph_status_payload_t) == 36, "gw_gpio_periph_status_payload_t must be 36 bytes");
 #endif
 
 #ifdef __cplusplus

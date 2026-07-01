@@ -201,6 +201,118 @@ bool AdcSampler::sendGwPacketToRp2040(const std::vector<uint8_t>& packet, std::s
     return true;
 }
 
+
+static uint64_t steadyMsForMcuPeripheral() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+static gw_gpio_periph_config_payload_t toGwPeripheralConfig(const McuPeripheralConfig& cfg) {
+    gw_gpio_periph_config_payload_t p{};
+    p.enabled = cfg.enabled ? 1 : 0;
+    p.dtmf_enabled = cfg.dtmf_decoder.enabled ? 1 : 0;
+    p.stq_gpio = static_cast<uint8_t>(std::max(0, std::min(29, cfg.dtmf_decoder.stq_gpio)));
+    p.q1_gpio = static_cast<uint8_t>(std::max(0, std::min(29, cfg.dtmf_decoder.q1_gpio)));
+    p.q2_gpio = static_cast<uint8_t>(std::max(0, std::min(29, cfg.dtmf_decoder.q2_gpio)));
+    p.q3_gpio = static_cast<uint8_t>(std::max(0, std::min(29, cfg.dtmf_decoder.q3_gpio)));
+    p.q4_gpio = static_cast<uint8_t>(std::max(0, std::min(29, cfg.dtmf_decoder.q4_gpio)));
+    p.stq_active_high = cfg.dtmf_decoder.stq_active_high ? 1 : 0;
+    p.q_active_high = cfg.dtmf_decoder.q_active_high ? 1 : 0;
+    p.ri_enabled = (cfg.ri.source == "mcu") ? 1 : 0;
+    p.ri_gpio = static_cast<uint8_t>(std::max(0, std::min(29, cfg.ri.gpio)));
+    p.ri_active_high = cfg.ri.active_high ? 1 : 0;
+    p.oh_enabled = (cfg.oh.source == "mcu") ? 1 : 0;
+    p.oh_gpio = static_cast<uint8_t>(std::max(0, std::min(29, cfg.oh.gpio)));
+    p.oh_active_high = cfg.oh.active_high ? 1 : 0;
+    p.debounce_ms = static_cast<uint16_t>(std::max(0, std::min(1000, cfg.dtmf_decoder.debounce_ms)));
+    p.event_holdoff_ms = static_cast<uint16_t>(std::max(0, std::min(10000, cfg.dtmf_decoder.event_holdoff_ms)));
+    return p;
+}
+
+bool AdcSampler::sendMcuPeripheralConfigLocked(int fd, std::string& error) {
+    gw_gpio_periph_config_payload_t p = toGwPeripheralConfig(mcu_periph_config_);
+    auto pkt = gw::encodeControlRequest(GW_OP_GPIO_PERIPH_CONFIG, gw_request_id_++, &p, sizeof(p), gw_packet_seq_++);
+    size_t sent = 0;
+    while (sent < pkt.size()) {
+        ssize_t rc = ::write(fd, pkt.data() + sent, pkt.size() - sent);
+        if (rc > 0) { sent += static_cast<size_t>(rc); continue; }
+        if (rc < 0 && errno == EINTR) continue;
+        if (rc < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; }
+        error = "Failed to write MCU peripheral config: " + std::string(std::strerror(errno));
+        return false;
+    }
+    mcu_periph_config_dirty_ = false;
+    return true;
+}
+
+void AdcSampler::processMcuPeripheralStatusLocked(const gw_gpio_periph_status_payload_t& st) {
+    mcu_periph_state_.config = mcu_periph_config_;
+    mcu_periph_state_.connected = rp2040_connected_;
+    mcu_periph_state_.status_seen = true;
+    mcu_periph_state_.last_status_server_ms = steadyMsForMcuPeripheral();
+    mcu_periph_state_.uptime_ms = st.uptime_ms;
+    mcu_periph_state_.enabled = st.enabled != 0;
+    mcu_periph_state_.dtmf_enabled = st.dtmf_enabled != 0;
+    mcu_periph_state_.dtmf_active = st.dtmf_active != 0;
+    mcu_periph_state_.stq_raw = st.stq_raw != 0;
+    mcu_periph_state_.q1_raw = st.q1_raw != 0;
+    mcu_periph_state_.q2_raw = st.q2_raw != 0;
+    mcu_periph_state_.q3_raw = st.q3_raw != 0;
+    mcu_periph_state_.q4_raw = st.q4_raw != 0;
+    mcu_periph_state_.raw_q_bits = st.raw_q_bits & 0x0F;
+    mcu_periph_state_.decoded_digit = st.decoded_digit;
+    mcu_periph_state_.dtmf_sequence = st.dtmf_sequence;
+    mcu_periph_state_.dtmf_event_ms = st.dtmf_event_ms;
+    mcu_periph_state_.ri_raw = st.ri_raw != 0;
+    mcu_periph_state_.ri_logical = st.ri_logical != 0;
+    mcu_periph_state_.ri_transition_count = st.ri_transition_count;
+    mcu_periph_state_.oh_raw = st.oh_raw != 0;
+    mcu_periph_state_.oh_logical = st.oh_logical != 0;
+    mcu_periph_state_.oh_transition_count = st.oh_transition_count;
+
+    if (st.dtmf_sequence != 0 && st.dtmf_sequence != mcu_periph_last_sequence_) {
+        mcu_periph_last_sequence_ = st.dtmf_sequence;
+        DtmfDecodedEvent ev;
+        ev.server_timestamp_ms = mcu_periph_state_.last_status_server_ms;
+        ev.mcu_timestamp_ms = st.dtmf_event_ms;
+        ev.sequence = st.dtmf_sequence;
+        ev.source = mcu_periph_config_.dtmf_decoder.source;
+        ev.digit = st.decoded_digit;
+        ev.raw_q_bits = st.raw_q_bits & 0x0F;
+        ev.stq_active = st.dtmf_active != 0;
+        mcu_periph_state_.history.push_back(ev);
+        const size_t limit = std::max<size_t>(1, mcu_periph_config_.dtmf_decoder.history_limit);
+        while (mcu_periph_state_.history.size() > limit) mcu_periph_state_.history.pop_front();
+    }
+}
+
+void AdcSampler::updateMcuPeripheralConfig(const McuPeripheralConfig& config) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    mcu_periph_config_ = config;
+    mcu_periph_state_.config = config;
+    mcu_periph_config_dirty_ = true;
+    const size_t limit = std::max<size_t>(1, mcu_periph_config_.dtmf_decoder.history_limit);
+    while (mcu_periph_state_.history.size() > limit) mcu_periph_state_.history.pop_front();
+}
+
+McuPeripheralConfig AdcSampler::mcuPeripheralConfig() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return mcu_periph_config_;
+}
+
+McuPeripheralSnapshot AdcSampler::mcuPeripheralSnapshot() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    McuPeripheralSnapshot out = mcu_periph_state_;
+    out.config = mcu_periph_config_;
+    out.connected = rp2040_connected_;
+    return out;
+}
+
+void AdcSampler::clearMcuDtmfHistory() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    mcu_periph_state_.history.clear();
+}
+
 bool AdcSampler::waitForGwpProtocol(uint32_t timeout_ms, std::string& error) const {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -517,6 +629,7 @@ void AdcSampler::workerRp2040() {
             } else if (!error.empty()) {
                 last_error_ = error;
             }
+            mcu_periph_config_dirty_ = true;
         }
 
         std::string reconnect_reason;
@@ -600,6 +713,10 @@ void AdcSampler::workerRp2040() {
                         continue;
                     }
                     rp2040_packets_ok_++;
+                    if (device_protocol_active_ && mcu_periph_config_dirty_) {
+                        std::string cfg_error;
+                        if (!sendMcuPeripheralConfigLocked(fd, cfg_error) && !cfg_error.empty()) last_error_ = cfg_error;
+                    }
                     if (gh.msg_type == GW_MSG_DATA && payload.size() >= sizeof(gw_adc_data_payload_t)) {
                         gw_adc_data_payload_t ap{};
                         std::memcpy(&ap, payload.data(), sizeof(ap));
@@ -634,6 +751,10 @@ void AdcSampler::workerRp2040() {
                         } else {
                             last_error_ = "GWP unsupported ADC sample format/channel count";
                         }
+                    } else if (gh.msg_type == GW_MSG_STATUS && gh.stream_id == GW_STREAM_CONTROL && payload.size() >= sizeof(gw_gpio_periph_status_payload_t)) {
+                        gw_gpio_periph_status_payload_t st{};
+                        std::memcpy(&st, payload.data(), sizeof(st));
+                        processMcuPeripheralStatusLocked(st);
                     } else if (gh.msg_type == GW_MSG_STATUS && payload.size() >= sizeof(gw_status_payload_t)) {
                         gw_status_payload_t st{};
                         std::memcpy(&st, payload.data(), sizeof(st));

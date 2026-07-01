@@ -24,6 +24,7 @@
 #include "TelephonyDiagnostics.hpp"
 #include "FilterProfileManager.hpp"
 #include "AudioPlaybackService.hpp"
+#include "McuPeripheral.hpp"
 #include "HeaderPins.hpp"
 
 namespace {
@@ -309,6 +310,7 @@ int main(int argc, char* argv[]) {
     adc_config.adc.cs_bcm = 8; // default MCP3202 CS is Raspberry Pi SPI0 CE0: physical pin 24 / BCM8
 
     DacOutput::Config dac_output_config;
+    McuPeripheralConfig mcu_peripheral_config;
     MCP4922::Config& dac_config = dac_output_config.native;
     bool dac_cli_touched = false;
     bool dac_autostart = true;
@@ -358,6 +360,7 @@ int main(int argc, char* argv[]) {
         dac_output_config = DacOutput::Config();
         dac_config = dac_output_config.native;
     }
+    mcu_peripheral_config = loadMcuPeripheralConfigFromFile(context->config_path, mcu_peripheral_config);
 
     try {
         for (int i = 1; i < argc; ++i) {
@@ -625,6 +628,7 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<TelephonyDiagnostics> telephony_diagnostics;
     if (adc_config.enabled) {
         adc_sampler = std::make_unique<AdcSampler>(adc_config, context->signal_buffer);
+        adc_sampler->updateMcuPeripheralConfig(mcu_peripheral_config);
         adc_sampler->start();
         caller_id_detector = std::make_unique<CallerIdDetector>(adc_sampler.get(), context, &filter_profiles);
         caller_id_detector->start();

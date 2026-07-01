@@ -2,6 +2,8 @@
 
 #include "MCP3202.hpp"
 #include "SharedSignalBuffer.hpp"
+#include "McuPeripheral.hpp"
+#include "../protocol/gw_protocol.h"
 
 #include <array>
 #include <atomic>
@@ -102,6 +104,10 @@ public:
     void updateConfig(Config new_config);
     bool sendGwPacketToRp2040(const std::vector<uint8_t>& packet, std::string& error);
     bool waitForGwpProtocol(uint32_t timeout_ms, std::string& error) const;
+    void updateMcuPeripheralConfig(const McuPeripheralConfig& config);
+    McuPeripheralConfig mcuPeripheralConfig() const;
+    McuPeripheralSnapshot mcuPeripheralSnapshot() const;
+    void clearMcuDtmfHistory();
     AdcScopeData status() const;
     AdcScopeData snapshot(size_t max_points = 1600) const;
     AdcScopeData recent(size_t frames) const;
@@ -112,6 +118,8 @@ private:
     // RP2040 USB CDC reader loop
     void workerRp2040();
     bool sendRp2040RateCommandLocked(int fd, uint32_t rate, std::string& error);
+    bool sendMcuPeripheralConfigLocked(int fd, std::string& error);
+    void processMcuPeripheralStatusLocked(const gw_gpio_periph_status_payload_t& st);
 
     void configureWorkerScheduling();
     void fillStatusLocked(AdcScopeData& data) const;
@@ -174,6 +182,10 @@ private:
     uint32_t device_caps_formats_ = 0;
     uint32_t gw_packet_seq_ = 1;
     uint16_t gw_request_id_ = 1;
+    McuPeripheralConfig mcu_periph_config_;
+    McuPeripheralSnapshot mcu_periph_state_;
+    bool mcu_periph_config_dirty_ = true;
+    uint32_t mcu_periph_last_sequence_ = 0;
 
     std::atomic<bool> running_{false};
     std::thread worker_;

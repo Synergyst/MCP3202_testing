@@ -140,6 +140,61 @@ json dacConfigJson(const DacOutput::Config& c) {
     };
 }
 
+
+std::string qBitsBinary(uint8_t bits) {
+    std::string out;
+    for (int i = 3; i >= 0; --i) out.push_back((bits & (1u << i)) ? '1' : '0');
+    return out;
+}
+
+json mcuDtmfEventJson(const DtmfDecodedEvent& e) {
+    return {
+        {"server_timestamp_ms", e.server_timestamp_ms},
+        {"mcu_timestamp_ms", e.mcu_timestamp_ms},
+        {"sequence", e.sequence},
+        {"source", e.source},
+        {"digit", e.digit ? std::string(1, e.digit) : std::string("")},
+        {"raw_q_bits", e.raw_q_bits},
+        {"raw_q_bits_binary", qBitsBinary(e.raw_q_bits)},
+        {"stq_active", e.stq_active}
+    };
+}
+
+json mcuPeripheralConfigJson(const McuPeripheralConfig& c) {
+    return mcuPeripheralConfigToJson(c);
+}
+
+json mcuPeripheralStatusJson(const McuPeripheralSnapshot& s) {
+    json hist = json::array();
+    for (const auto& e : s.history) hist.push_back(mcuDtmfEventJson(e));
+    return {
+        {"connected", s.connected},
+        {"status_seen", s.status_seen},
+        {"last_status_server_ms", s.last_status_server_ms},
+        {"uptime_ms", s.uptime_ms},
+        {"config", mcuPeripheralConfigJson(s.config)},
+        {"dtmf_decoder", {
+            {"enabled", s.config.dtmf_decoder.enabled},
+            {"source", s.config.dtmf_decoder.source},
+            {"active", s.dtmf_active},
+            {"current_digit", s.decoded_digit ? std::string(1, s.decoded_digit) : std::string("")},
+            {"last_digit", s.decoded_digit ? std::string(1, s.decoded_digit) : std::string("")},
+            {"last_sequence", s.dtmf_sequence},
+            {"mcu_timestamp_ms", s.dtmf_event_ms},
+            {"history_limit", s.config.dtmf_decoder.history_limit},
+            {"raw", {
+                {"stq", s.stq_raw}, {"q1", s.q1_raw}, {"q2", s.q2_raw}, {"q3", s.q3_raw}, {"q4", s.q4_raw},
+                {"q_bits", s.raw_q_bits}, {"q_bits_binary", qBitsBinary(s.raw_q_bits)}
+            }},
+            {"history", hist}
+        }},
+        {"ch1817_signals", {
+            {"ri", {{"source", s.config.ri.source}, {"raw", s.ri_raw}, {"logical", s.ri_logical}, {"transition_count", s.ri_transition_count}}},
+            {"oh", {{"source", s.config.oh.source}, {"raw", s.oh_raw}, {"logical", s.oh_logical}, {"transition_count", s.oh_transition_count}}}
+        }}
+    };
+}
+
 DacOutput::Config dacConfigFromJson(const json& j, DacOutput::Config cfg) {
     auto& d = cfg.native;
     if (j.contains("enabled")) cfg.enabled = j.at("enabled").get<bool>();
@@ -762,6 +817,29 @@ const char* HTML_UI = R"html(
                 <span class="record-help">DTMF tones are synthesized on the RP2040 firmware using fixed 8 kHz DTMF synthesis with midpoint-biased silence and click-reducing ramps; this UI preserves unsaved edits while status polling runs.</span>
             </div>
         </div>
+        <div class="config-panel record-panel effects-panel">
+            <div style="display:flex; flex-direction:column; gap:10px; min-width:360px; flex:1;">
+                <div class="pin-title" style="font-size:1.05rem;">MT8870 DTMF Decoder / MCU Peripheral Validation</div>
+                <div class="stat-row"><b>Decoder:</b> <span id="dtmfDecEnabled">-</span> <b>Source:</b> <span id="dtmfDecSource">-</span> <b>Active/StQ:</b> <span id="dtmfDecActive">-</span> <b>Current:</b> <span id="dtmfDecDigit">-</span></div>
+                <div class="stat-row">Raw pins: StQ=<span id="mtStqRaw">-</span> Q1=<span id="mtQ1Raw">-</span> Q2=<span id="mtQ2Raw">-</span> Q3=<span id="mtQ3Raw">-</span> Q4=<span id="mtQ4Raw">-</span> bits=<span id="mtBits">----</span> seq=<span id="mtSeq">0</span></div>
+                <div class="stat-row">RI source=<span id="mcuRiSource">-</span> raw=<span id="mcuRiRaw">-</span> logical=<span id="mcuRiLogical">-</span> transitions=<span id="mcuRiTransitions">0</span> · OH source=<span id="mcuOhSource">-</span> raw=<span id="mcuOhRaw">-</span> logical=<span id="mcuOhLogical">-</span> transitions=<span id="mcuOhTransitions">0</span></div>
+                <span class="record-help">The MT8870 analog DTMF input is not assumed by software. Generate validation tones from any properly conditioned source; DAC CH1 is only bench context if you wire it that way.</span>
+                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                    <label>Expected sequence <input class="dtmf-sequence" type="text" id="dtmfValidationExpected" placeholder="1234567890*#ABCD"></label>
+                    <button onclick="startDtmfValidation()">Start Validation</button>
+                    <button onclick="clearDtmfDecoderHistory()">Clear History</button>
+                    <button onclick="copyDtmfDecoderHistory()">Copy History</button>
+                    <span class="record-status" id="dtmfDecoderStatus">Idle</span>
+                </div>
+                <div style="max-height:220px; overflow:auto; border:1px solid #294247; border-radius:8px;">
+                    <table style="width:100%; border-collapse:collapse; font-size:0.88rem;">
+                        <thead><tr><th>Seq</th><th>Digit</th><th>Raw bits</th><th>Expected</th><th>Match</th><th>Source</th></tr></thead>
+                        <tbody id="dtmfDecoderHistory"><tr><td colspan="6">No decoded tones yet.</td></tr></tbody>
+                    </table>
+                </div>
+                <div id="dtmfMappingHelp" class="record-help"></div>
+            </div>
+        </div>
         <div class="tiny">MCP4922 is a dual 12-bit voltage-output DAC. Writes use 16 SPI clocks: four command bits followed by 12 data bits; SPI is unidirectional and supports modes 0,0 and 1,1. VOUT = VREF * code / 4096 * gain.</div>
     </div>
     </div>
@@ -837,6 +915,7 @@ const char* HTML_UI = R"html(
                     timeoutInput.value = data.timeout_ms;
                 }
                 updateDacUi(data);
+                updateMcuPeripheralUi(data);
 
                 for (const pinId in data.pins) {
                     const pin = data.pins[pinId];
@@ -1803,6 +1882,85 @@ const char* HTML_UI = R"html(
             } catch (err) { st.textContent = `Failed: ${err.message || err}`; }
         }
 
+
+        let dtmfValidation = { active:false, expected:'', startSeq:0 };
+        const normalBitsByDigit = {'1':'0001','2':'0010','3':'0011','4':'0100','5':'0101','6':'0110','7':'0111','8':'1000','9':'1001','0':'1010','*':'1011','#':'1100','A':'1101','B':'1110','C':'1111','D':'0000'};
+        function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
+        function updateMcuPeripheralUi(data) {
+            const mp = data && data.mcu_peripherals; if (!mp) return;
+            const dec = mp.dtmf_decoder || {}; const raw = dec.raw || {}; const sig = mp.ch1817_signals || {};
+            setText('dtmfDecEnabled', dec.enabled ? 'yes' : 'no');
+            setText('dtmfDecSource', dec.source || '-');
+            setText('dtmfDecActive', dec.active ? 'ACTIVE' : 'idle');
+            setText('dtmfDecDigit', dec.current_digit || '-');
+            setText('mtStqRaw', raw.stq ? '1' : '0'); setText('mtQ1Raw', raw.q1 ? '1' : '0'); setText('mtQ2Raw', raw.q2 ? '1' : '0'); setText('mtQ3Raw', raw.q3 ? '1' : '0'); setText('mtQ4Raw', raw.q4 ? '1' : '0');
+            setText('mtBits', raw.q_bits_binary || '----'); setText('mtSeq', dec.last_sequence || 0);
+            const ri = sig.ri || {}; const oh = sig.oh || {};
+            setText('mcuRiSource', ri.source || '-'); setText('mcuRiRaw', ri.raw ? '1' : '0'); setText('mcuRiLogical', ri.logical ? '1' : '0'); setText('mcuRiTransitions', ri.transition_count || 0);
+            setText('mcuOhSource', oh.source || '-'); setText('mcuOhRaw', oh.raw ? '1' : '0'); setText('mcuOhLogical', oh.logical ? '1' : '0'); setText('mcuOhTransitions', oh.transition_count || 0);
+            renderDtmfDecoderHistory(dec.history || []);
+        }
+        function renderDtmfDecoderHistory(history) {
+            const tbody = document.getElementById('dtmfDecoderHistory'); if (!tbody) return;
+            if (!history.length) { tbody.innerHTML = '<tr><td colspan="6">No decoded tones yet.</td></tr>'; return; }
+            const rows = [];
+            const mismatches = [];
+            const events = history.filter(e => !dtmfValidation.active || (e.sequence || 0) > dtmfValidation.startSeq);
+            const expected = (dtmfValidation.expected || '').toUpperCase();
+            history.slice().reverse().forEach((e) => {
+                const evIndex = events.findIndex(x => x.sequence === e.sequence);
+                const exp = (dtmfValidation.active && evIndex >= 0 && evIndex < expected.length) ? expected[evIndex] : '';
+                const obs = (e.digit || '').toUpperCase();
+                const match = exp ? (obs === exp ? 'yes' : 'NO') : '';
+                if (exp && obs !== exp) mismatches.push({expected:exp, observed:obs, raw:e.raw_q_bits_binary || ''});
+                rows.push(`<tr><td>${e.sequence ?? ''}</td><td><b>${e.digit || ''}</b></td><td>${e.raw_q_bits_binary || ''}</td><td>${exp}</td><td>${match}</td><td>${e.source || ''}</td></tr>`);
+            });
+            tbody.innerHTML = rows.join('');
+            const help = document.getElementById('dtmfMappingHelp');
+            if (help) {
+                help.textContent = mismatches.length ? mismatches.slice(0,5).map(m => `Expected ${m.expected} normally bits ${normalBitsByDigit[m.expected] || '????'}, observed ${m.observed || '?'} bits ${m.raw}.`).join(' ') + ' This may indicate Q pins are swapped or inverted.' : '';
+            }
+            const st = document.getElementById('dtmfDecoderStatus');
+            if (st && dtmfValidation.active) st.textContent = `Validation: ${Math.min(events.length, expected.length)}/${expected.length} captured`;
+        }
+        function startDtmfValidation() {
+            const el = document.getElementById('dtmfValidationExpected');
+            dtmfValidation.expected = ((el && el.value) || '').toUpperCase().replace(/[^0-9*#A-D]/g, '');
+            const seq = parseInt(document.getElementById('mtSeq')?.textContent || '0', 10) || 0;
+            dtmfValidation.startSeq = seq;
+            dtmfValidation.active = dtmfValidation.expected.length > 0;
+            const st = document.getElementById('dtmfDecoderStatus'); if (st) st.textContent = dtmfValidation.active ? `Validation started for ${dtmfValidation.expected}` : 'Enter expected sequence first';
+        }
+        async function clearDtmfDecoderHistory() {
+            const st = document.getElementById('dtmfDecoderStatus'); if (st) st.textContent = 'Clearing...';
+            try { const res = await fetch('/api/dac/dtmf/decoder/history/clear', {method:'POST'}); const data = await res.json(); if(!res.ok) throw new Error(data.error || 'failed'); dtmfValidation.active=false; if (st) st.textContent='History cleared'; fetchStatus(); }
+            catch(err) { if (st) st.textContent = `Clear failed: ${err.message || err}`; }
+        }
+        async function copyDtmfDecoderHistory() {
+            try {
+                const res = await fetch('/api/dac/dtmf/decoder/status');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'failed');
+                const txt = (data.history || []).map(e => `${e.sequence}\t${e.digit}\t${e.raw_q_bits_binary}\t${e.source}`).join('\n');
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(txt);
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.value = txt;
+                    ta.style.position = 'fixed';
+                    ta.style.left = '-9999px';
+                    document.body.appendChild(ta);
+                    ta.focus();
+                    ta.select();
+                    const ok = document.execCommand('copy');
+                    ta.remove();
+                    if (!ok) throw new Error('clipboard unavailable');
+                }
+                const st=document.getElementById('dtmfDecoderStatus'); if(st) st.textContent='History copied';
+            }
+            catch(err) { const st=document.getElementById('dtmfDecoderStatus'); if(st) st.textContent=`Copy failed: ${err.message || err}`; }
+        }
+
         async function updateTimeout() {
             const val = document.getElementById('timeoutInput').value;
             const params = new URLSearchParams();
@@ -2131,6 +2289,61 @@ void WebServer::setup_routes() {
         }
     });
 
+
+    svr.Get("/api/dac/dtmf/decoder/status", [this](const httplib::Request&, httplib::Response& res) {
+        if (!adc_sampler) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "RP2040/ADC sampler not configured"}}.dump(), "application/json");
+            return;
+        }
+        res.set_content(mcuPeripheralStatusJson(adc_sampler->mcuPeripheralSnapshot())["dtmf_decoder"].dump(), "application/json");
+    });
+
+    svr.Post("/api/dac/dtmf/decoder/history/clear", [this](const httplib::Request&, httplib::Response& res) {
+        if (!adc_sampler) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "RP2040/ADC sampler not configured"}}.dump(), "application/json");
+            return;
+        }
+        adc_sampler->clearMcuDtmfHistory();
+        res.set_content(json{{"ok", true}, {"cleared", true}}.dump(), "application/json");
+    });
+
+    svr.Get("/api/mcu/peripherals/status", [this](const httplib::Request&, httplib::Response& res) {
+        if (!adc_sampler) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "RP2040/ADC sampler not configured"}}.dump(), "application/json");
+            return;
+        }
+        res.set_content(mcuPeripheralStatusJson(adc_sampler->mcuPeripheralSnapshot()).dump(), "application/json");
+    });
+
+    svr.Post("/api/mcu/peripherals/config", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!adc_sampler) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "RP2040/ADC sampler not configured"}}.dump(), "application/json");
+            return;
+        }
+        try {
+            json body = json::parse(req.body.empty() ? "{}" : req.body);
+            McuPeripheralConfig cfg = mcuPeripheralConfigFromJson(body.contains("mcu_peripherals") ? body : json{{"mcu_peripherals", body}}, adc_sampler->mcuPeripheralConfig());
+            {
+                std::lock_guard<std::mutex> cfg_lock(context->config_mutex);
+                json root;
+                { std::ifstream f(context->config_path); if (f.is_open()) { try { f >> root; } catch (...) { root = json::object(); } } }
+                if (!root.is_object()) root = json::object();
+                root["mcu_peripherals"] = mcuPeripheralConfigToJson(cfg);
+                std::ofstream out(context->config_path);
+                if (out.is_open()) out << root.dump(2);
+            }
+            adc_sampler->updateMcuPeripheralConfig(cfg);
+            res.set_content(json{{"status", "ok"}, {"mcu_peripherals", mcuPeripheralStatusJson(adc_sampler->mcuPeripheralSnapshot())}}.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"status", "error"}, {"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
     svr.Get("/api/caller-id", [this](const httplib::Request&, httplib::Response& res) {
         const std::string source = readFskSourceSetting(context);
         json out = selectedCallerIdJson(source, caller_id_detector);
@@ -2421,6 +2634,8 @@ std::string WebServer::serialize_state() {
     } else {
         j["dac"] = {{"enabled", false}, {"healthy", false}, {"last_error", "DAC output not configured"}};
     }
+    if (adc_sampler) j["mcu_peripherals"] = mcuPeripheralStatusJson(adc_sampler->mcuPeripheralSnapshot());
+    else j["mcu_peripherals"] = mcuPeripheralStatusJson(McuPeripheralSnapshot());
     j["pins"] = json::object();
 
     for (const auto& [phys, pin] : registry) {

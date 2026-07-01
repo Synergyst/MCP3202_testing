@@ -164,6 +164,78 @@ static uint32_t dtmf_phase_col = 0;
 static uint32_t dtmf_inc_row = 0;
 static uint32_t dtmf_inc_col = 0;
 
+
+#define MCU_MT8870_DEFAULT_STQ_PIN 12u
+#define MCU_MT8870_DEFAULT_Q1_PIN 26u
+#define MCU_MT8870_DEFAULT_Q2_PIN 27u
+#define MCU_MT8870_DEFAULT_Q3_PIN 10u
+#define MCU_MT8870_DEFAULT_Q4_PIN 11u
+#define MCU_CH1817_DEFAULT_RI_PIN 8u
+#define MCU_CH1817_DEFAULT_OH_PIN 7u
+
+typedef struct {
+    bool enabled;
+    bool dtmf_enabled;
+    uint8_t stq_gpio;
+    uint8_t q1_gpio;
+    uint8_t q2_gpio;
+    uint8_t q3_gpio;
+    uint8_t q4_gpio;
+    bool stq_active_high;
+    bool q_active_high;
+    bool ri_enabled;
+    uint8_t ri_gpio;
+    bool ri_active_high;
+    bool oh_enabled;
+    uint8_t oh_gpio;
+    bool oh_active_high;
+    uint16_t debounce_ms;
+    uint16_t event_holdoff_ms;
+} mcu_periph_config_t;
+
+static mcu_periph_config_t mcu_periph_cfg = {
+    .enabled = true,
+    .dtmf_enabled = true,
+    .stq_gpio = MCU_MT8870_DEFAULT_STQ_PIN,
+    .q1_gpio = MCU_MT8870_DEFAULT_Q1_PIN,
+    .q2_gpio = MCU_MT8870_DEFAULT_Q2_PIN,
+    .q3_gpio = MCU_MT8870_DEFAULT_Q3_PIN,
+    .q4_gpio = MCU_MT8870_DEFAULT_Q4_PIN,
+    .stq_active_high = true,
+    .q_active_high = true,
+    .ri_enabled = false,
+    .ri_gpio = MCU_CH1817_DEFAULT_RI_PIN,
+    .ri_active_high = true,
+    .oh_enabled = false,
+    .oh_gpio = MCU_CH1817_DEFAULT_OH_PIN,
+    .oh_active_high = true,
+    .debounce_ms = 2,
+    .event_holdoff_ms = 25,
+};
+
+static bool mt_stq_raw = false;
+static bool mt_q1_raw = false;
+static bool mt_q2_raw = false;
+static bool mt_q3_raw = false;
+static bool mt_q4_raw = false;
+static uint8_t mt_q_bits = 0;
+static bool mt_stq_candidate = false;
+static bool mt_stq_stable = false;
+static uint32_t mt_candidate_ms = 0;
+static uint32_t mt_last_event_ms = 0;
+static uint32_t mt_sequence = 0;
+static uint32_t mt_event_ms = 0;
+static char mt_digit = 0;
+static bool ri_raw = false;
+static bool ri_logical = false;
+static uint32_t ri_transition_count = 0;
+static bool oh_raw = false;
+static bool oh_logical = false;
+static uint32_t oh_transition_count = 0;
+static bool periph_initialized = false;
+static uint32_t last_periph_status_ms = 0;
+
+
 static inline void adc_cs_select(void) { gpio_put(MCU_ADC_PIN_CS, 0); __asm volatile("nop\n nop\n nop\n"); }
 static inline void adc_cs_deselect(void) { gpio_put(MCU_ADC_PIN_CS, 1); sleep_us(1); }
 
@@ -353,6 +425,164 @@ static void dtmf_tick(void) {
 #endif
 }
 
+
+static bool gpio_valid_pin(uint8_t gpio) { return gpio < 30u; }
+
+static void periph_init_input(uint8_t gpio) {
+    if (!gpio_valid_pin(gpio)) return;
+    gpio_init(gpio);
+    gpio_set_dir(gpio, GPIO_IN);
+    gpio_disable_pulls(gpio);
+}
+
+static void periph_configure_pins(void) {
+    if (!mcu_periph_cfg.enabled) return;
+    if (mcu_periph_cfg.dtmf_enabled) {
+        periph_init_input(mcu_periph_cfg.stq_gpio);
+        periph_init_input(mcu_periph_cfg.q1_gpio);
+        periph_init_input(mcu_periph_cfg.q2_gpio);
+        periph_init_input(mcu_periph_cfg.q3_gpio);
+        periph_init_input(mcu_periph_cfg.q4_gpio);
+    }
+    if (mcu_periph_cfg.ri_enabled) periph_init_input(mcu_periph_cfg.ri_gpio);
+    if (mcu_periph_cfg.oh_enabled) periph_init_input(mcu_periph_cfg.oh_gpio);
+    periph_initialized = true;
+}
+
+static bool periph_read_gpio(uint8_t gpio) {
+    if (!gpio_valid_pin(gpio)) return false;
+    return gpio_get(gpio) ? true : false;
+}
+
+static char mt8870_decode_digit(uint8_t q_bits) {
+    switch (q_bits & 0x0Fu) {
+        case 0x1: return '1';
+        case 0x2: return '2';
+        case 0x3: return '3';
+        case 0x4: return '4';
+        case 0x5: return '5';
+        case 0x6: return '6';
+        case 0x7: return '7';
+        case 0x8: return '8';
+        case 0x9: return '9';
+        case 0xA: return '0';
+        case 0xB: return '*';
+        case 0xC: return '#';
+        case 0xD: return 'A';
+        case 0xE: return 'B';
+        case 0xF: return 'C';
+        case 0x0: return 'D';
+        default: return 0;
+    }
+}
+
+static void periph_poll(void) {
+    if (!mcu_periph_cfg.enabled) return;
+    if (!periph_initialized) periph_configure_pins();
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+
+    if (mcu_periph_cfg.dtmf_enabled) {
+        mt_stq_raw = periph_read_gpio(mcu_periph_cfg.stq_gpio);
+        mt_q1_raw = periph_read_gpio(mcu_periph_cfg.q1_gpio);
+        mt_q2_raw = periph_read_gpio(mcu_periph_cfg.q2_gpio);
+        mt_q3_raw = periph_read_gpio(mcu_periph_cfg.q3_gpio);
+        mt_q4_raw = periph_read_gpio(mcu_periph_cfg.q4_gpio);
+        bool stq_logical = mcu_periph_cfg.stq_active_high ? mt_stq_raw : !mt_stq_raw;
+        bool q1 = mcu_periph_cfg.q_active_high ? mt_q1_raw : !mt_q1_raw;
+        bool q2 = mcu_periph_cfg.q_active_high ? mt_q2_raw : !mt_q2_raw;
+        bool q3 = mcu_periph_cfg.q_active_high ? mt_q3_raw : !mt_q3_raw;
+        bool q4 = mcu_periph_cfg.q_active_high ? mt_q4_raw : !mt_q4_raw;
+        mt_q_bits = (uint8_t)((q1 ? 0x1u : 0u) | (q2 ? 0x2u : 0u) | (q3 ? 0x4u : 0u) | (q4 ? 0x8u : 0u));
+        mt_digit = mt8870_decode_digit(mt_q_bits);
+
+        if (stq_logical != mt_stq_candidate) {
+            mt_stq_candidate = stq_logical;
+            mt_candidate_ms = now;
+        }
+        uint32_t debounce = mcu_periph_cfg.debounce_ms;
+        if (mt_stq_candidate != mt_stq_stable && (now - mt_candidate_ms) >= debounce) {
+            bool old = mt_stq_stable;
+            mt_stq_stable = mt_stq_candidate;
+            if (!old && mt_stq_stable && (now - mt_last_event_ms) >= mcu_periph_cfg.event_holdoff_ms) {
+                mt_sequence++;
+                mt_event_ms = now;
+                mt_last_event_ms = now;
+                uint32_t packed = ((uint32_t)(uint8_t)mt_digit << 8) | mt_q_bits;
+                send_event(GW_EVENT_GPIO_DTMF_DIGIT, GW_STREAM_CONTROL, mt_sequence, packed);
+            }
+        }
+    }
+
+    if (mcu_periph_cfg.ri_enabled) {
+        bool raw = periph_read_gpio(mcu_periph_cfg.ri_gpio);
+        bool logical = mcu_periph_cfg.ri_active_high ? raw : !raw;
+        if (raw != ri_raw || logical != ri_logical) ri_transition_count++;
+        ri_raw = raw;
+        ri_logical = logical;
+    }
+    if (mcu_periph_cfg.oh_enabled) {
+        bool raw = periph_read_gpio(mcu_periph_cfg.oh_gpio);
+        bool logical = mcu_periph_cfg.oh_active_high ? raw : !raw;
+        if (raw != oh_raw || logical != oh_logical) oh_transition_count++;
+        oh_raw = raw;
+        oh_logical = logical;
+    }
+}
+
+static void send_periph_status(void) {
+    periph_poll();
+    gw_gpio_periph_status_payload_t st = {0};
+    st.uptime_ms = to_ms_since_boot(get_absolute_time());
+    st.dtmf_sequence = mt_sequence;
+    st.dtmf_event_ms = mt_event_ms;
+    st.ri_transition_count = ri_transition_count;
+    st.oh_transition_count = oh_transition_count;
+    st.enabled = mcu_periph_cfg.enabled ? 1 : 0;
+    st.dtmf_enabled = mcu_periph_cfg.dtmf_enabled ? 1 : 0;
+    st.dtmf_active = mt_stq_stable ? 1 : 0;
+    st.stq_raw = mt_stq_raw ? 1 : 0;
+    st.q1_raw = mt_q1_raw ? 1 : 0;
+    st.q2_raw = mt_q2_raw ? 1 : 0;
+    st.q3_raw = mt_q3_raw ? 1 : 0;
+    st.q4_raw = mt_q4_raw ? 1 : 0;
+    st.raw_q_bits = mt_q_bits;
+    st.decoded_digit = mt_digit;
+    st.ri_raw = ri_raw ? 1 : 0;
+    st.ri_logical = ri_logical ? 1 : 0;
+    st.oh_raw = oh_raw ? 1 : 0;
+    st.oh_logical = oh_logical ? 1 : 0;
+    write_packet(GW_MSG_STATUS, GW_STREAM_CONTROL, &st, sizeof(st));
+}
+
+static uint16_t handle_periph_config(const uint8_t *args, uint16_t arg_len) {
+    if (arg_len < sizeof(gw_gpio_periph_config_payload_t)) return GW_STATUS_BAD_REQUEST;
+    gw_gpio_periph_config_payload_t p;
+    memcpy(&p, args, sizeof(p));
+    mcu_periph_cfg.enabled = p.enabled != 0;
+    mcu_periph_cfg.dtmf_enabled = p.dtmf_enabled != 0;
+    mcu_periph_cfg.stq_gpio = p.stq_gpio;
+    mcu_periph_cfg.q1_gpio = p.q1_gpio;
+    mcu_periph_cfg.q2_gpio = p.q2_gpio;
+    mcu_periph_cfg.q3_gpio = p.q3_gpio;
+    mcu_periph_cfg.q4_gpio = p.q4_gpio;
+    mcu_periph_cfg.stq_active_high = p.stq_active_high != 0;
+    mcu_periph_cfg.q_active_high = p.q_active_high != 0;
+    mcu_periph_cfg.ri_enabled = p.ri_enabled != 0;
+    mcu_periph_cfg.ri_gpio = p.ri_gpio;
+    mcu_periph_cfg.ri_active_high = p.ri_active_high != 0;
+    mcu_periph_cfg.oh_enabled = p.oh_enabled != 0;
+    mcu_periph_cfg.oh_gpio = p.oh_gpio;
+    mcu_periph_cfg.oh_active_high = p.oh_active_high != 0;
+    mcu_periph_cfg.debounce_ms = p.debounce_ms;
+    mcu_periph_cfg.event_holdoff_ms = p.event_holdoff_ms;
+    periph_initialized = false;
+    mt_stq_candidate = mt_stq_stable = false;
+    mt_candidate_ms = to_ms_since_boot(get_absolute_time());
+    periph_configure_pins();
+    send_periph_status();
+    return GW_STATUS_OK;
+}
+
 static void send_dtmf_status(void) {
     gw_dtmf_status_payload_t st = {0};
     st.active = dtmf_active ? 1 : 0; st.channel_mask = dtmf_channel_mask; st.current_index = dtmf_index; st.digit_count = dtmf_digit_count;
@@ -449,6 +679,7 @@ static void send_status(void) {
 #if MCU_DAC_ENABLE
     send_dac_status();
 #endif
+    send_periph_status();
 }
 
 static void send_ctrl_resp(uint16_t opcode, uint16_t reqid, uint16_t status) {
@@ -596,6 +827,8 @@ static void handle_gwp1_packet(uint8_t first_magic_byte) {
     else if (req.opcode == GW_OP_STREAM_STOP) stream_active = false;
     else if (req.opcode == GW_OP_GET_STATUS) { send_status(); }
     else if (req.opcode == GW_OP_GET_CAPS || req.opcode == GW_OP_HELLO) { send_caps(); }
+    else if (req.opcode == GW_OP_GPIO_PERIPH_CONFIG) { status = handle_periph_config(args, req.arg_len); }
+    else if (req.opcode == GW_OP_GPIO_PERIPH_STATUS) { send_periph_status(); }
     else if ((req.opcode >= GW_OP_DAC_SET_RATE && req.opcode <= GW_OP_DAC_GET_STATUS) || (req.opcode >= GW_OP_DAC_DTMF_PLAY && req.opcode <= GW_OP_DAC_DTMF_STATUS)) { status = handle_dac_ctrl(&req, args); }
     else status = GW_STATUS_UNSUPPORTED;
     send_ctrl_resp(req.opcode, req.request_id, status);
@@ -635,6 +868,7 @@ int main(void) {
     // both MCP4922 input registers; with LDAC tied low, outputs update on CS rise.
     mcp4922_write_pair(0, 0);
 #endif
+    periph_configure_pins();
     multicore_launch_core1(sampler_core);
     send_caps(); send_status();
 
@@ -642,6 +876,8 @@ int main(void) {
     while (true) {
         int c = getchar_timeout_us(0); if (c == 'S') handle_ascii_rate(); else if (c == 'G') handle_gwp1_packet((uint8_t)c);
         uint32_t now_ms = to_ms_since_boot(get_absolute_time()); if (now_ms - last_status_ms >= 1000u) { last_status_ms = now_ms; send_status(); }
+        periph_poll();
+        if (now_ms - last_periph_status_ms >= 250u) { last_periph_status_ms = now_ms; send_periph_status(); }
         dtmf_tick();
         check_dac_underrun();
         if (ring_available() < MCU_ADC_PACKET_FRAMES) { sleep_ms(1); continue; }
