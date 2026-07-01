@@ -16,7 +16,6 @@ exec /root/mcp-adc/gpio-webui/gpio-webui/cm4_gpio_server \
   --gpio-phys 11 \
   --adc-source rp2040 \
   --adc-rp2040-dev "$RP2040_DEV" \
-  --adc-rate 16000 \
   --adc-max-buffer-mb 256 \
   --adc-history-ms 60000 \
   --dac-enable \

@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/otp_header_parser"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/otp_header_parser.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/otp_header_parser-complete.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-build.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-configure.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-download.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-install.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-mkdir.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-patch.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"otp_header_parser"
+		],
+		"name" : "otp_header_parser"
+	}
+}

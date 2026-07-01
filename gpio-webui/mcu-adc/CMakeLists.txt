@@ -24,7 +24,7 @@ target_include_directories(mcu_adc PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_compile_definitions(mcu_adc PRIVATE
     # Waveshare RP2040-Zero + MCP3202 default wiring. Override with cmake -D if desired.
     MCU_ADC_SAMPLE_RATE_HZ=16000
-    MCU_ADC_SPI_BAUD=1600000
+    MCU_ADC_SPI_BAUD=900000
     MCU_ADC_SPI_PORT=0
     MCU_ADC_PIN_MISO=0
     MCU_ADC_PIN_CS=1
@@ -41,7 +41,7 @@ target_compile_definitions(mcu_adc PRIVATE
     MCU_DAC_PIN_MOSI=15
     MCU_DAC_PIN_LDAC=-1
     MCU_DAC_PIN_SHDN=-1
-    MCU_DAC_DEFAULT_RATE_HZ=48000
+    MCU_DAC_DEFAULT_RATE_HZ=16000
     MCU_DAC_MAX_RATE_HZ=100000
 )
 

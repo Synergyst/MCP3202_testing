@@ -1,4 +1,5 @@
 #include "LineStateDetector.hpp"
+#include "libs/audio_filters/AudioFilters.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -50,8 +51,8 @@ double toneGroupScore(const std::vector<dsp::GoertzelResult>& bins, const LineSt
 }
 } // namespace
 
-LineStateDetector::LineStateDetector(std::shared_ptr<SystemContext> context, AdcSampler* sampler, Ch1817Driver* ch1817_driver)
-    : context_(std::move(context)), sampler_(sampler), ch1817_driver_(ch1817_driver), cadence_trackers_(16) {
+LineStateDetector::LineStateDetector(std::shared_ptr<SystemContext> context, AdcSampler* sampler, Ch1817Driver* ch1817_driver, FilterProfileManager* filter_profiles)
+    : context_(std::move(context)), sampler_(sampler), ch1817_driver_(ch1817_driver), filter_profiles_(filter_profiles), cadence_trackers_(16) {
     state_.enabled = sampler_ != nullptr;
     loadSettings();
 }
@@ -186,7 +187,8 @@ json LineStateDetector::snapshotToJson(const Snapshot& s) {
         {"ri_active", s.ri_active}, {"ri_ringing", s.ri_ringing}, {"ri_frequency_hz", s.ri_frequency_hz},
         {"best_tone", s.best_tone}, {"region", s.region}, {"region_label", s.region_label}, {"tones", tones},
         {"analyzed_windows", s.analyzed_windows}, {"sample_rate_hz", s.sample_rate_hz}, {"window_samples", s.window_samples},
-        {"status", s.status}, {"last_error", s.last_error}, {"last_transition", s.last_transition}, {"settings", settingsToJson(s.settings)}
+        {"status", s.status}, {"last_error", s.last_error}, {"last_transition", s.last_transition},
+        {"filter_profile", s.filter_profile}, {"filter_effects", s.filter_effects}, {"settings", settingsToJson(s.settings)}
     };
 }
 
@@ -343,6 +345,11 @@ void LineStateDetector::worker() {
                 const uint32_t sr = std::max<uint32_t>(1, adc.measured_sample_rate_hz ? adc.measured_sample_rate_hz : adc.sample_rate_hz);
                 dsp::SignalWindowReader reader(context_ ? context_->signal_buffer : nullptr, sr);
                 auto win = reader.latestMs(static_cast<double>(cfg.analysis_window_ms));
+                std::vector<std::string> filter_effects;
+                if (filter_profiles_) {
+                    filter_effects = filter_profiles_->effectiveEffects("line_state.detector");
+                    if (!filter_effects.empty()) AudioFilters::applyEffectsToFloatMono(win.samples, sr, filter_effects);
+                }
                 AnalysisResult a;
                 {
                     std::lock_guard<std::mutex> lock(mtx_);
@@ -384,6 +391,11 @@ void LineStateDetector::worker() {
                     }
                 }
                 publish(a, ri, sr, win.samples.size());
+                {
+                    std::lock_guard<std::mutex> lock(mtx_);
+                    state_.filter_profile = "line_state.detector";
+                    state_.filter_effects = filter_effects;
+                }
             }
         } catch (const std::exception& e) {
             std::lock_guard<std::mutex> lock(mtx_);

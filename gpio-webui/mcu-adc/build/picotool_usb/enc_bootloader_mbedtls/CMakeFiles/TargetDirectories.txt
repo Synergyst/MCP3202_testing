@@ -1,0 +1,2 @@
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/enc_bootloader_mbedtls/CMakeFiles/edit_cache.dir
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/enc_bootloader_mbedtls/CMakeFiles/rebuild_cache.dir

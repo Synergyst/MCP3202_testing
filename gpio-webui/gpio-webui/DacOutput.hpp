@@ -61,6 +61,7 @@ public:
     bool setRate(uint32_t rate_hz, std::string& error);
     bool setFormat(uint8_t channel_count, uint8_t sample_format, std::string& error);
     bool writeRawBoth(uint16_t raw_a, uint16_t raw_b, std::string& error);
+    bool writeRawBlock(const std::vector<std::pair<uint16_t, uint16_t>>& frames, std::string& error);
     bool writeVoltsBoth(double volts_a, double volts_b, std::string& error);
     bool playDtmf(const std::string& digits, uint16_t tone_ms, uint16_t gap_ms, uint16_t amplitude, uint8_t channel_mask, std::string& error);
     bool stopDtmf(std::string& error);

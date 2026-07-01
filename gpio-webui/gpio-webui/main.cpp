@@ -22,6 +22,8 @@
 #include "LineStateDetector.hpp"
 #include "TelephonyCoordinator.hpp"
 #include "TelephonyDiagnostics.hpp"
+#include "FilterProfileManager.hpp"
+#include "AudioPlaybackService.hpp"
 #include "HeaderPins.hpp"
 
 namespace {
@@ -596,6 +598,7 @@ int main(int argc, char* argv[]) {
     removeReservedPinsFromRegistry(registry, reserved_gpio);
 
     ConfigManager config_mgr(context->config_path);
+    FilterProfileManager filter_profiles(context);
     if (dac_cli_touched) {
         persistDacConfig(config_mgr, dac_output_config);
         config_mgr.setSetting("dac_autostart", dac_autostart ? "true" : "false");
@@ -623,11 +626,13 @@ int main(int argc, char* argv[]) {
     if (adc_config.enabled) {
         adc_sampler = std::make_unique<AdcSampler>(adc_config, context->signal_buffer);
         adc_sampler->start();
-        caller_id_detector = std::make_unique<CallerIdDetector>(adc_sampler.get(), context);
+        caller_id_detector = std::make_unique<CallerIdDetector>(adc_sampler.get(), context, &filter_profiles);
         caller_id_detector->start();
     }
 
     dac_output = std::make_unique<DacOutput>(dac_output_config, (dac_output_config.transport == "rp2040" ? adc_sampler.get() : nullptr));
+
+    AudioPlaybackService playback_service(dac_output.get(), &filter_profiles, context);
 
     if (dac_output_config.enabled && dac_autostart) {
         std::string dac_error;
@@ -652,17 +657,17 @@ int main(int argc, char* argv[]) {
 
     if (ch1817_driver) ch1817_driver->start();
     if (adc_sampler) {
-        line_state_detector = std::make_unique<LineStateDetector>(context, adc_sampler.get(), ch1817_driver.get());
+        line_state_detector = std::make_unique<LineStateDetector>(context, adc_sampler.get(), ch1817_driver.get(), &filter_profiles);
         line_state_detector->start();
     }
     telephony_coordinator = std::make_unique<TelephonyCoordinator>(context, ch1817_driver.get(), line_state_detector.get(), caller_id_detector.get());
     telephony_coordinator->start();
-    telephony_diagnostics = std::make_unique<TelephonyDiagnostics>(context, adc_sampler.get(), ch1817_driver.get(), line_state_detector.get(), telephony_coordinator.get());
+    telephony_diagnostics = std::make_unique<TelephonyDiagnostics>(context, adc_sampler.get(), ch1817_driver.get(), line_state_detector.get(), telephony_coordinator.get(), &filter_profiles);
 
     GpioManager gpio_mgr(registry, reserved_gpio);
     gpio_mgr.start(context->timeout_ms);
 
-    WebServer web_server(registry, config_mgr, gpio_mgr, context, adc_sampler.get(), dac_output.get(), caller_id_detector.get(), ch1817_driver.get(), line_state_detector.get(), telephony_coordinator.get(), telephony_diagnostics.get(), reserved_gpio);
+    WebServer web_server(registry, config_mgr, gpio_mgr, context, adc_sampler.get(), dac_output.get(), caller_id_detector.get(), ch1817_driver.get(), line_state_detector.get(), telephony_coordinator.get(), telephony_diagnostics.get(), &filter_profiles, &playback_service, reserved_gpio);
     
     std::cout << "=====================================================" << std::endl;
     std::cout << "Starting Modular CM4 GPIO" << (adc_config.enabled ? " + ADC (" + adc_config.adc_source + ")" : " Full-Control")

@@ -1,0 +1,13 @@
+# Target labels
+ xip_ram_perms
+# Source files and their labels
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/xip_ram_perms
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/xip_ram_perms.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/xip_ram_perms-complete.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-build.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-configure.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-download.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-install.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-mkdir.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-patch.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-update.rule

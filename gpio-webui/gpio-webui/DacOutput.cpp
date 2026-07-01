@@ -194,6 +194,58 @@ bool DacOutput::writeRawBoth(uint16_t raw_a, uint16_t raw_b, std::string& error)
     return true;
 }
 
+bool DacOutput::writeRawBlock(const std::vector<std::pair<uint16_t, uint16_t>>& frames, std::string& error) {
+    if (frames.empty()) { error.clear(); return true; }
+    if (config_.enabled && config_.transport == "rp2040" && adc_sampler_) {
+        if (!adc_sampler_->waitForGwpProtocol(1500, error)) {
+            std::lock_guard<std::mutex> lock(mtx_);
+            noteErrorLocked(error);
+            return false;
+        }
+    }
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!config_.enabled) { error = "DAC is disabled"; noteErrorLocked(error); return false; }
+    if (config_.transport == "native") {
+        try {
+            if (!native_) native_ = std::make_unique<MCP4922>(config_.native);
+            for (const auto& frame : frames) {
+                native_->writeRawBoth(clampRaw12(frame.first), clampRaw12(frame.second));
+                raw_a_ = clampRaw12(frame.first);
+                raw_b_ = clampRaw12(frame.second);
+                frames_written_++;
+            }
+        } catch (const std::exception& e) { error = e.what(); noteErrorLocked(error); return false; }
+    } else {
+        std::vector<uint8_t> payload;
+        const uint16_t frame_count = static_cast<uint16_t>(std::min<size_t>(frames.size(), 512));
+        payload.resize(sizeof(gw_dac_data_payload_t) + frame_count * 4u);
+        gw_dac_data_payload_t meta{};
+        meta.frame_count = frame_count;
+        meta.channel_count = 2;
+        meta.sample_format = GW_SAMPLE_U16_LE;
+        std::memcpy(payload.data(), &meta, sizeof(meta));
+        uint8_t* p = payload.data() + sizeof(meta);
+        for (uint16_t i = 0; i < frame_count; ++i) {
+            uint16_t a = clampRaw12(frames[i].first);
+            uint16_t b = clampRaw12(frames[i].second);
+            std::memcpy(p + i * 4u, &a, 2);
+            std::memcpy(p + i * 4u + 2u, &b, 2);
+            raw_a_ = a; raw_b_ = b;
+        }
+        if (!active_) {
+            std::string ignored;
+            gw_format_payload_t f{}; f.channel_count = 2; f.sample_format = GW_SAMPLE_U16_LE;
+            sendMcuControl(GW_OP_DAC_SET_FORMAT, &f, sizeof(f), ignored);
+            sendMcuControl(GW_OP_DAC_STREAM_START, nullptr, 0, ignored);
+            active_ = true;
+        }
+        if (!sendMcuData(payload, error)) { noteErrorLocked(error); return false; }
+        frames_written_ += frame_count;
+    }
+    last_error_.clear();
+    return true;
+}
+
 bool DacOutput::writeVoltsBoth(double volts_a, double volts_b, std::string& error) {
     return writeRawBoth(voltsToRawA(volts_a), voltsToRawB(volts_b), error);
 }

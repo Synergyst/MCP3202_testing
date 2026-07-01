@@ -4,6 +4,7 @@
 #include "Ch1817Driver.hpp"
 #include "SignalProcessing.hpp"
 #include "SystemContext.hpp"
+#include "FilterProfileManager.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -102,6 +103,8 @@ public:
         std::string status;
         std::string last_error;
         std::string last_transition;
+        std::string filter_profile;
+        std::vector<std::string> filter_effects;
         Settings settings;
     };
 
@@ -120,7 +123,7 @@ public:
         std::string status;
     };
 
-    LineStateDetector(std::shared_ptr<SystemContext> context, AdcSampler* sampler, Ch1817Driver* ch1817_driver = nullptr);
+    LineStateDetector(std::shared_ptr<SystemContext> context, AdcSampler* sampler, Ch1817Driver* ch1817_driver = nullptr, FilterProfileManager* filter_profiles = nullptr);
     ~LineStateDetector();
 
     LineStateDetector(const LineStateDetector&) = delete;
@@ -166,6 +169,7 @@ private:
     std::shared_ptr<SystemContext> context_;
     AdcSampler* sampler_ = nullptr;
     Ch1817Driver* ch1817_driver_ = nullptr;
+    FilterProfileManager* filter_profiles_ = nullptr;
 
     mutable std::mutex mtx_;
     Settings settings_;

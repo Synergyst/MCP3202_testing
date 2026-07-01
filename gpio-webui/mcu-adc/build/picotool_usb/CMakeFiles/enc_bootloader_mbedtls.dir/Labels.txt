@@ -1,0 +1,13 @@
+# Target labels
+ enc_bootloader_mbedtls
+# Source files and their labels
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/enc_bootloader_mbedtls
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/enc_bootloader_mbedtls.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/enc_bootloader_mbedtls-complete.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/enc_bootloader_mbedtls/src/enc_bootloader_mbedtls-stamp/enc_bootloader_mbedtls-build.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/enc_bootloader_mbedtls/src/enc_bootloader_mbedtls-stamp/enc_bootloader_mbedtls-configure.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/enc_bootloader_mbedtls/src/enc_bootloader_mbedtls-stamp/enc_bootloader_mbedtls-download.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/enc_bootloader_mbedtls/src/enc_bootloader_mbedtls-stamp/enc_bootloader_mbedtls-install.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/enc_bootloader_mbedtls/src/enc_bootloader_mbedtls-stamp/enc_bootloader_mbedtls-mkdir.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/enc_bootloader_mbedtls/src/enc_bootloader_mbedtls-stamp/enc_bootloader_mbedtls-patch.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/enc_bootloader_mbedtls/src/enc_bootloader_mbedtls-stamp/enc_bootloader_mbedtls-update.rule

@@ -1,4 +1,5 @@
 #include "TelephonyDiagnostics.hpp"
+#include "libs/audio_filters/AudioFilters.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -28,8 +29,9 @@ TelephonyDiagnostics::TelephonyDiagnostics(std::shared_ptr<SystemContext> contex
                                            AdcSampler* adc_sampler,
                                            Ch1817Driver* ch1817_driver,
                                            LineStateDetector* line_state_detector,
-                                           TelephonyCoordinator* telephony_coordinator)
-    : context_(std::move(context)), adc_sampler_(adc_sampler), ch1817_driver_(ch1817_driver), line_state_detector_(line_state_detector), telephony_coordinator_(telephony_coordinator) {
+                                           TelephonyCoordinator* telephony_coordinator,
+                                           FilterProfileManager* filter_profiles)
+    : context_(std::move(context)), adc_sampler_(adc_sampler), ch1817_driver_(ch1817_driver), line_state_detector_(line_state_detector), telephony_coordinator_(telephony_coordinator), filter_profiles_(filter_profiles) {
     loadCalibration();
 }
 
@@ -95,6 +97,8 @@ json TelephonyDiagnostics::calibrateRcvNoiseFloor(size_t duration_ms, size_t win
     uint32_t sr = 0;
     auto samples = latestWindowMs(std::max<size_t>(100, duration_ms), sr);
     if (samples.empty() || sr == 0) return {{"status", "error"}, {"error", "no RCV samples available"}};
+    std::vector<std::string> filter_effects;
+    if (filter_profiles_) { filter_effects = filter_profiles_->effectiveEffects("telephony.diagnostics"); if (!filter_effects.empty()) AudioFilters::applyEffectsToFloatMono(samples, sr, filter_effects); }
     const size_t win = std::max<size_t>(8, (static_cast<uint64_t>(sr) * std::max<size_t>(20, window_ms) + 999) / 1000);
     std::vector<double> rms_values, peak_values;
     for (size_t pos = 0; pos < samples.size(); pos += win) {
@@ -106,6 +110,7 @@ json TelephonyDiagnostics::calibrateRcvNoiseFloor(size_t duration_ms, size_t win
     }
     auto rec = recommendThresholds(rms_values, peak_values);
     return {{"status", "ok"}, {"duration_ms", duration_ms}, {"window_ms", window_ms}, {"sample_rate_hz", sr},
+            {"filter_profile", "telephony.diagnostics"}, {"filter_effects", filter_effects},
             {"samples", samples.size()}, {"windows", rms_values.size()}, {"summary", summarizeSamples(samples, sr)}, {"recommendations", rec}};
 }
 
@@ -113,6 +118,8 @@ json TelephonyDiagnostics::toneScan(size_t duration_ms, const std::string& regio
     uint32_t sr = 0;
     auto samples = latestWindowMs(std::max<size_t>(50, duration_ms), sr);
     if (samples.empty() || sr == 0) return {{"status", "error"}, {"error", "no RCV samples available"}};
+    std::vector<std::string> filter_effects;
+    if (filter_profiles_) { filter_effects = filter_profiles_->effectiveEffects("telephony.diagnostics"); if (!filter_effects.empty()) AudioFilters::applyEffectsToFloatMono(samples, sr, filter_effects); }
     auto profile = LineStateDetector::builtInProfile(region);
     std::vector<double> freqs;
     for (const auto& t : profile.tones) for (double f : t.frequencies_hz) freqs.push_back(f);
@@ -124,6 +131,7 @@ json TelephonyDiagnostics::toneScan(size_t duration_ms, const std::string& regio
     auto settings = line_state_detector_ ? line_state_detector_->settings() : LineStateDetector::Settings();
     auto analysis = LineStateDetector::analyzeSamplesForTest(samples, sr, settings, profile, false);
     return {{"status", "ok"}, {"duration_ms", duration_ms}, {"region", profile.id}, {"region_label", profile.label},
+            {"filter_profile", "telephony.diagnostics"}, {"filter_effects", filter_effects},
             {"summary", summarizeSamples(samples, sr)}, {"detected_state", LineStateDetector::stateText(analysis.state)},
             {"confidence", analysis.confidence}, {"best_tone", analysis.tone_name}, {"tones", tones},
             {"recommended_tone_detect_threshold", std::max(0.02, std::min(0.20, analysis.confidence * 0.35))}};
@@ -133,6 +141,8 @@ json TelephonyDiagnostics::captureDisconnectProfile(size_t duration_ms, const st
     uint32_t sr = 0;
     auto samples = latestWindowMs(std::max<size_t>(100, duration_ms), sr);
     if (samples.empty() || sr == 0) return {{"status", "error"}, {"error", "no RCV samples available"}};
+    std::vector<std::string> filter_effects;
+    if (filter_profiles_) { filter_effects = filter_profiles_->effectiveEffects("telephony.diagnostics"); if (!filter_effects.empty()) AudioFilters::applyEffectsToFloatMono(samples, sr, filter_effects); }
 
     auto spectrum = dsp::fftMagnitudeSpectrum(samples, sr, true, dsp::WindowFunction::Hann, true);
     std::sort(spectrum.begin(), spectrum.end(), [](const auto& a, const auto& b){ return a.power > b.power; });
@@ -177,6 +187,7 @@ json TelephonyDiagnostics::captureDisconnectProfile(size_t duration_ms, const st
         {"notes", "Review dominant frequencies/cadence, then convert into a disconnect_detection profile."}
     };
     return {{"status", "ok"}, {"duration_ms", duration_ms}, {"sample_rate_hz", sr},
+            {"filter_profile", "telephony.diagnostics"}, {"filter_effects", filter_effects},
             {"summary", summarizeSamples(samples, sr)}, {"dominant_tones", dominant},
             {"activity_threshold_rms", threshold}, {"suggested_profile", suggested}};
 }

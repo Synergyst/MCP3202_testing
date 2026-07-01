@@ -1,0 +1,5 @@
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/CMakeFiles/otp_header_parse.dir
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/CMakeFiles/edit_cache.dir
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/CMakeFiles/rebuild_cache.dir
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/lib/nlohmann_json/CMakeFiles/edit_cache.dir
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/lib/nlohmann_json/CMakeFiles/rebuild_cache.dir

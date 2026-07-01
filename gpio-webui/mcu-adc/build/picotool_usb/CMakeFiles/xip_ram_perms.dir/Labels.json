@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/xip_ram_perms"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/xip_ram_perms.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/xip_ram_perms-complete.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-build.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-configure.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-download.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-install.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-mkdir.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-patch.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/xip_ram_perms/src/xip_ram_perms-stamp/xip_ram_perms-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"xip_ram_perms"
+		],
+		"name" : "xip_ram_perms"
+	}
+}

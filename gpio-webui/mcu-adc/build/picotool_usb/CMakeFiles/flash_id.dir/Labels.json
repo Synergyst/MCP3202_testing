@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/flash_id"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/flash_id.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/flash_id-complete.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-build.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-configure.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-download.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-install.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-mkdir.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-patch.rule"
+		},
+		{
+			"file" : "/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"flash_id"
+		],
+		"name" : "flash_id"
+	}
+}

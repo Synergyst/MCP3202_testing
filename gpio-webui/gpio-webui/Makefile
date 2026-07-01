@@ -13,16 +13,23 @@ LDFLAGS += $(RNNOISE_LIBS)
 endif
 TARGET = cm4_gpio_server
 DSP_TEST = dsp_selftest
+AUDIO_PIPELINE_TEST = audio_pipeline_selftest
 LINE_STATE_TEST = line_state_selftest
 TELCO_TEST = telephony_coordinator_selftest
 TELDIAG_TEST = telephony_diagnostics_selftest
-OBJS = main.o ConfigManager.o GpioManager.o WebServer.o MCP3202.o MCP4922.o DacOutput.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o AudioProcessing.o CallerIdDetector.o Ch1817Driver.o SignalProcessing.o LineStateDetector.o TelephonyCoordinator.o TelephonyDiagnostics.o
+AUDIO_FILTER_OBJS = libs/audio_filters/AudioFilters.o
+FSK_OBJS = libs/fsk/Fsk.o
+FILTER_PROFILE_OBJS = FilterProfileManager.o
+DAC_PLAYBACK_OBJS = DacPlaybackFilters.o
+PLAYBACK_OBJS = WavFile.o AudioPlaybackService.o
+OBJS = main.o ConfigManager.o GpioManager.o WebServer.o MCP3202.o MCP4922.o DacOutput.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o AudioProcessing.o $(AUDIO_FILTER_OBJS) $(FILTER_PROFILE_OBJS) $(DAC_PLAYBACK_OBJS) $(PLAYBACK_OBJS) CallerIdDetector.o $(FSK_OBJS) Ch1817Driver.o SignalProcessing.o LineStateDetector.o TelephonyCoordinator.o TelephonyDiagnostics.o
 DSP_TEST_OBJS = dsp_selftest.o SignalProcessing.o
-LINE_STATE_TEST_OBJS = line_state_selftest.o LineStateDetector.o SignalProcessing.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o MCP3202.o Ch1817Driver.o
-TELCO_TEST_OBJS = telephony_coordinator_selftest.o TelephonyCoordinator.o LineStateDetector.o SignalProcessing.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o MCP3202.o Ch1817Driver.o CallerIdDetector.o
-TELDIAG_TEST_OBJS = telephony_diagnostics_selftest.o TelephonyDiagnostics.o TelephonyCoordinator.o LineStateDetector.o SignalProcessing.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o MCP3202.o Ch1817Driver.o CallerIdDetector.o
+AUDIO_PIPELINE_TEST_OBJS = audio_pipeline_selftest.o AudioProcessing.o WavFile.o $(AUDIO_FILTER_OBJS)
+LINE_STATE_TEST_OBJS = line_state_selftest.o LineStateDetector.o SignalProcessing.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o MCP3202.o Ch1817Driver.o $(FILTER_PROFILE_OBJS) $(AUDIO_FILTER_OBJS)
+TELCO_TEST_OBJS = telephony_coordinator_selftest.o TelephonyCoordinator.o LineStateDetector.o SignalProcessing.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o MCP3202.o Ch1817Driver.o CallerIdDetector.o $(FSK_OBJS) $(FILTER_PROFILE_OBJS) $(AUDIO_FILTER_OBJS)
+TELDIAG_TEST_OBJS = telephony_diagnostics_selftest.o TelephonyDiagnostics.o TelephonyCoordinator.o LineStateDetector.o SignalProcessing.o AdcSampler.o GwProtocol.o GwTransport.o GwDevice.o MCP3202.o Ch1817Driver.o CallerIdDetector.o $(FSK_OBJS) $(FILTER_PROFILE_OBJS) $(AUDIO_FILTER_OBJS)
 
-all: rnnoise-status $(TARGET) $(DSP_TEST) $(LINE_STATE_TEST) $(TELCO_TEST) $(TELDIAG_TEST)
+all: rnnoise-status $(TARGET) $(DSP_TEST) $(AUDIO_PIPELINE_TEST) $(LINE_STATE_TEST) $(TELCO_TEST) $(TELDIAG_TEST)
 
 rnnoise-status:
 ifeq ($(HAVE_RNNOISE),1)
@@ -37,8 +44,11 @@ $(TARGET): $(OBJS)
 $(DSP_TEST): $(DSP_TEST_OBJS)
 	$(CXX) $(CXXFLAGS) -I. -o $(DSP_TEST) $(DSP_TEST_OBJS) -lpthread
 
+$(AUDIO_PIPELINE_TEST): $(AUDIO_PIPELINE_TEST_OBJS)
+	$(CXX) $(CXXFLAGS) -I. -o $(AUDIO_PIPELINE_TEST) $(AUDIO_PIPELINE_TEST_OBJS) $(LDFLAGS)
+
 $(LINE_STATE_TEST): $(LINE_STATE_TEST_OBJS)
-	$(CXX) $(CXXFLAGS) -I. -o $(LINE_STATE_TEST) $(LINE_STATE_TEST_OBJS) -lgpiodcxx -lgpiod -lpthread
+	$(CXX) $(CXXFLAGS) -I. -o $(LINE_STATE_TEST) $(LINE_STATE_TEST_OBJS) $(LDFLAGS)
 
 $(TELCO_TEST): $(TELCO_TEST_OBJS)
 	$(CXX) $(CXXFLAGS) -I. -o $(TELCO_TEST) $(TELCO_TEST_OBJS) $(LDFLAGS)
@@ -46,7 +56,7 @@ $(TELCO_TEST): $(TELCO_TEST_OBJS)
 $(TELDIAG_TEST): $(TELDIAG_TEST_OBJS)
 	$(CXX) $(CXXFLAGS) -I. -o $(TELDIAG_TEST) $(TELDIAG_TEST_OBJS) $(LDFLAGS)
 
-main.o: main.cpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp WebServer.hpp SystemContext.hpp SharedSignalBuffer.hpp AdcSampler.hpp MCP3202.hpp MCP4922.hpp DacOutput.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp HeaderPins.hpp httplib.h
+main.o: main.cpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp WebServer.hpp SystemContext.hpp SharedSignalBuffer.hpp AdcSampler.hpp MCP3202.hpp MCP4922.hpp DacOutput.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp FilterProfileManager.hpp AudioPlaybackService.hpp HeaderPins.hpp httplib.h
 	$(CXX) $(CXXFLAGS) -I. -c main.cpp -o main.o
 
 ConfigManager.o: ConfigManager.cpp ConfigManager.hpp PinConfig.hpp
@@ -76,22 +86,40 @@ GwTransport.o: GwTransport.cpp GwTransport.hpp
 GwDevice.o: GwDevice.cpp GwDevice.hpp GwProtocol.hpp ../protocol/gw_protocol.h
 	$(CXX) $(CXXFLAGS) -I. -c GwDevice.cpp -o GwDevice.o
 
-AudioProcessing.o: AudioProcessing.cpp AudioProcessing.hpp
+AudioProcessing.o: AudioProcessing.cpp AudioProcessing.hpp libs/audio_filters/AudioFilters.hpp
 	$(CXX) $(CXXFLAGS) -I. -c AudioProcessing.cpp -o AudioProcessing.o
 
-CallerIdDetector.o: CallerIdDetector.cpp CallerIdDetector.hpp AdcSampler.hpp SystemContext.hpp SharedSignalBuffer.hpp
+FilterProfileManager.o: FilterProfileManager.cpp FilterProfileManager.hpp SystemContext.hpp libs/audio_filters/AudioFilters.hpp
+	$(CXX) $(CXXFLAGS) -I. -c FilterProfileManager.cpp -o FilterProfileManager.o
+
+DacPlaybackFilters.o: DacPlaybackFilters.cpp DacPlaybackFilters.hpp AudioProcessing.hpp FilterProfileManager.hpp libs/audio_filters/AudioFilters.hpp
+	$(CXX) $(CXXFLAGS) -I. -c DacPlaybackFilters.cpp -o DacPlaybackFilters.o
+
+WavFile.o: WavFile.cpp WavFile.hpp AudioProcessing.hpp
+	$(CXX) $(CXXFLAGS) -I. -c WavFile.cpp -o WavFile.o
+
+AudioPlaybackService.o: AudioPlaybackService.cpp AudioPlaybackService.hpp DacOutput.hpp FilterProfileManager.hpp WavFile.hpp DacPlaybackFilters.hpp libs/audio_filters/AudioFilters.hpp
+	$(CXX) $(CXXFLAGS) -I. -c AudioPlaybackService.cpp -o AudioPlaybackService.o
+
+libs/audio_filters/AudioFilters.o: libs/audio_filters/AudioFilters.cpp libs/audio_filters/AudioFilters.hpp
+	$(CXX) $(CXXFLAGS) -I. -c libs/audio_filters/AudioFilters.cpp -o libs/audio_filters/AudioFilters.o
+
+libs/fsk/Fsk.o: libs/fsk/Fsk.cpp libs/fsk/Fsk.hpp
+	$(CXX) $(CXXFLAGS) -I. -c libs/fsk/Fsk.cpp -o libs/fsk/Fsk.o
+
+CallerIdDetector.o: CallerIdDetector.cpp CallerIdDetector.hpp AdcSampler.hpp SystemContext.hpp SharedSignalBuffer.hpp FilterProfileManager.hpp libs/fsk/Fsk.hpp libs/audio_filters/AudioFilters.hpp
 	$(CXX) $(CXXFLAGS) -I. -c CallerIdDetector.cpp -o CallerIdDetector.o
 
 Ch1817Driver.o: Ch1817Driver.cpp Ch1817Driver.hpp SystemContext.hpp HeaderPins.hpp SharedSignalBuffer.hpp
 	$(CXX) $(CXXFLAGS) -I. -c Ch1817Driver.cpp -o Ch1817Driver.o
 
-LineStateDetector.o: LineStateDetector.cpp LineStateDetector.hpp SignalProcessing.hpp AdcSampler.hpp Ch1817Driver.hpp SystemContext.hpp SharedSignalBuffer.hpp
+LineStateDetector.o: LineStateDetector.cpp LineStateDetector.hpp SignalProcessing.hpp AdcSampler.hpp Ch1817Driver.hpp SystemContext.hpp SharedSignalBuffer.hpp FilterProfileManager.hpp libs/audio_filters/AudioFilters.hpp
 	$(CXX) $(CXXFLAGS) -I. -c LineStateDetector.cpp -o LineStateDetector.o
 
 TelephonyCoordinator.o: TelephonyCoordinator.cpp TelephonyCoordinator.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp SystemContext.hpp
 	$(CXX) $(CXXFLAGS) -I. -c TelephonyCoordinator.cpp -o TelephonyCoordinator.o
 
-TelephonyDiagnostics.o: TelephonyDiagnostics.cpp TelephonyDiagnostics.hpp AdcSampler.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp SignalProcessing.hpp SystemContext.hpp
+TelephonyDiagnostics.o: TelephonyDiagnostics.cpp TelephonyDiagnostics.hpp AdcSampler.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp SignalProcessing.hpp SystemContext.hpp FilterProfileManager.hpp libs/audio_filters/AudioFilters.hpp
 	$(CXX) $(CXXFLAGS) -I. -c TelephonyDiagnostics.cpp -o TelephonyDiagnostics.o
 
 SignalProcessing.o: SignalProcessing.cpp SignalProcessing.hpp SharedSignalBuffer.hpp
@@ -99,6 +127,9 @@ SignalProcessing.o: SignalProcessing.cpp SignalProcessing.hpp SharedSignalBuffer
 
 dsp_selftest.o: dsp_selftest.cpp SignalProcessing.hpp SharedSignalBuffer.hpp
 	$(CXX) $(CXXFLAGS) -I. -c dsp_selftest.cpp -o dsp_selftest.o
+
+audio_pipeline_selftest.o: audio_pipeline_selftest.cpp AudioProcessing.hpp WavFile.hpp libs/audio_filters/AudioFilters.hpp
+	$(CXX) $(CXXFLAGS) -I. -c audio_pipeline_selftest.cpp -o audio_pipeline_selftest.o
 
 line_state_selftest.o: line_state_selftest.cpp LineStateDetector.hpp SignalProcessing.hpp SharedSignalBuffer.hpp
 	$(CXX) $(CXXFLAGS) -I. -c line_state_selftest.cpp -o line_state_selftest.o
@@ -109,10 +140,10 @@ telephony_coordinator_selftest.o: telephony_coordinator_selftest.cpp TelephonyCo
 telephony_diagnostics_selftest.o: telephony_diagnostics_selftest.cpp TelephonyDiagnostics.hpp
 	$(CXX) $(CXXFLAGS) -I. -c telephony_diagnostics_selftest.cpp -o telephony_diagnostics_selftest.o
 
-WebServer.o: WebServer.cpp WebServer.hpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp SystemContext.hpp AdcSampler.hpp DacOutput.hpp MCP3202.hpp MCP4922.hpp AudioProcessing.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp SharedSignalBuffer.hpp httplib.h
+WebServer.o: WebServer.cpp WebServer.hpp PinConfig.hpp ConfigManager.hpp GpioManager.hpp SystemContext.hpp AdcSampler.hpp DacOutput.hpp MCP3202.hpp MCP4922.hpp AudioProcessing.hpp CallerIdDetector.hpp Ch1817Driver.hpp LineStateDetector.hpp TelephonyCoordinator.hpp TelephonyDiagnostics.hpp FilterProfileManager.hpp AudioPlaybackService.hpp SharedSignalBuffer.hpp httplib.h
 	$(CXX) $(CXXFLAGS) -I. -c WebServer.cpp -o WebServer.o
 
 clean:
-	rm -f $(TARGET) $(DSP_TEST) $(LINE_STATE_TEST) $(TELCO_TEST) $(TELDIAG_TEST) $(OBJS) dsp_selftest.o line_state_selftest.o telephony_coordinator_selftest.o telephony_diagnostics_selftest.o
+	rm -f $(TARGET) $(DSP_TEST) $(AUDIO_PIPELINE_TEST) $(LINE_STATE_TEST) $(TELCO_TEST) $(TELDIAG_TEST) $(OBJS) $(AUDIO_FILTER_OBJS) $(FSK_OBJS) $(FILTER_PROFILE_OBJS) $(DAC_PLAYBACK_OBJS) $(PLAYBACK_OBJS) dsp_selftest.o audio_pipeline_selftest.o line_state_selftest.o telephony_coordinator_selftest.o telephony_diagnostics_selftest.o
 
 .PHONY: all clean rnnoise-status

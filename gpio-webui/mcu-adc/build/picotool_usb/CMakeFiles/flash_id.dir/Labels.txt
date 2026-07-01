@@ -1,0 +1,13 @@
+# Target labels
+ flash_id
+# Source files and their labels
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/flash_id
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/flash_id.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/flash_id-complete.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-build.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-configure.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-download.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-install.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-mkdir.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-patch.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/picoboot_flash_id/src/flash_id-stamp/flash_id-update.rule

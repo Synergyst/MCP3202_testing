@@ -19,6 +19,7 @@ Implemented and validated:
 - Runtime sample-rate command from host to RP2040.
 - GWP1 capabilities/status/control packets.
 - MCU-side MCP4922 DAC backend with GWP1 set-rate, set-format, write-frame, write-block/DATA, start, stop, flush, status, underrun, and capability reporting.
+- MCU-side DTMF generator using fixed 8 kHz synthesis, 32-bit phase accumulators, sample-count timing, midpoint-biased silence, and short click-reducing ramps.
 - Host ADC backend selected with `--adc-source rp2040` or persisted config.
 - Web UI ADC source/rate/device controls.
 - Web UI RP2040 diagnostics.
@@ -118,6 +119,8 @@ GWP1 is documented in `../protocol/PROTOCOL.md`. DAC control supports:
 - `GW_OP_DAC_GET_STATUS`
 
 DAC block payloads use `gw_dac_data_payload_t` followed by interleaved samples. For `GW_SAMPLE_U16_LE`, each channel is a little-endian 16-bit value and only the low 12 bits are sent to the MCP4922.
+
+DTMF control uses `GW_OP_DAC_DTMF_PLAY`, `GW_OP_DAC_DTMF_STOP`, and `GW_OP_DAC_DTMF_STATUS`. DTMF is synthesized internally at 8 kHz for accurate telephone keypad frequencies; inactive channels and tone gaps are written as DAC midpoint 2048 rather than raw zero.
 
 ### Legacy ADC2 packet protocol
 

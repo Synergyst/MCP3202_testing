@@ -1,0 +1,13 @@
+# Target labels
+ otp_header_parser
+# Source files and their labels
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/otp_header_parser
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/otp_header_parser.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/CMakeFiles/otp_header_parser-complete.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-build.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-configure.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-download.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-install.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-mkdir.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-patch.rule
+/root/mcp-adc/gpio-webui/mcu-adc/build/picotool_usb/otp_header_parser/src/otp_header_parser-stamp/otp_header_parser-update.rule

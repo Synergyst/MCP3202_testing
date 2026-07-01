@@ -1,5 +1,6 @@
 #include "WebServer.hpp"
 #include "AudioProcessing.hpp"
+#include "libs/audio_filters/AudioFilters.hpp"
 #include <nlohmann/json.hpp>
 #include <iostream>
 #include <sstream>
@@ -188,6 +189,23 @@ std::vector<std::string> splitEffectsCsv(const std::string& csv) {
     return out;
 }
 
+std::string joinEffectsCsv(const std::vector<std::string>& effects) {
+    std::string out;
+    for (const auto& e : effects) {
+        if (!out.empty()) out += ",";
+        out += e;
+    }
+    return out;
+}
+
+std::string wavProfileContextForMode(const std::string& mode) {
+    if (mode == "ch0" || mode == "mono-ch0") return "adc.wav.ch0";
+    if (mode == "ch1" || mode == "mono-ch1") return "adc.wav.ch1";
+    if (mode == "mix" || mode == "mono-mix") return "adc.wav.mix";
+    if (mode == "stereo" || mode == "ch0ch1") return "adc.wav.stereo";
+    return "adc.wav.ch0";
+}
+
 uint16_t clampAdc(double v) {
     if (v < 0.0) return 0;
     if (v > 4095.0) return 4095;
@@ -236,6 +254,12 @@ GraphBiquad makeGraphNotch(double sample_rate, double center_hz, double q) {
 }
 
 std::vector<uint16_t> applyGraphEffectsToChannel(const std::vector<uint16_t>& raw, uint32_t sample_rate, const std::string& effects_csv) {
+    auto out = raw;
+    AudioFilters::applyEffectsToRawAdcMono(out, std::max<uint32_t>(1, sample_rate), splitEffectsCsv(effects_csv));
+    return out;
+}
+
+std::vector<uint16_t> applyGraphEffectsToChannelLegacy(const std::vector<uint16_t>& raw, uint32_t sample_rate, const std::string& effects_csv) {
     if (raw.empty()) return {};
     std::vector<double> x;
     x.reserve(raw.size());
@@ -495,7 +519,8 @@ const char* HTML_UI = R"html(
                     <option value="overlay">Raw + filtered overlay</option>
                 </select>
             </label>
-            <span class="record-help">Filtered/overlay graph uses the selected Effects below without downloading a WAV.</span>
+            <label><input type="checkbox" id="graphUseProfiles" checked> use saved CH0/CH1 graph profiles</label>
+            <span class="record-help">Filtered/overlay graph can use persisted per-channel profiles, or uncheck this to use the temporary Effects override below.</span>
         </div>
         <div class="config-panel record-panel">
             <label for="wavDuration">WAV capture:</label>
@@ -510,6 +535,7 @@ const char* HTML_UI = R"html(
             <select id="audioCodec">
                 <option value="pcm16">WAV PCM 16-bit</option>
             </select>
+            <label><input type="checkbox" id="wavUseProfiles" checked> use saved WAV profile</label>
             <button onclick="downloadWav()">Download Audio</button>
             <button onclick="previewWav()">Preview Audio</button>
             <span class="record-status" id="wavStatus"></span>
@@ -517,8 +543,25 @@ const char* HTML_UI = R"html(
             <audio id="audioPreview" controls style="width:100%; max-width:520px; display:none;"></audio>
         </div>
         <div class="config-panel record-panel effects-panel">
-            <label>Effects:</label>
+            <label>Temporary Effects Override:</label>
             <div class="effects-list" id="effectsList">Loading audio modules...</div>
+        </div>
+        <div class="config-panel record-panel effects-panel" id="filterProfileEditor">
+            <div style="display:flex; flex-direction:column; gap:10px; min-width:260px;">
+                <label>Saved filter profile:
+                    <select id="filterProfileContext"></select>
+                </label>
+                <label><input type="checkbox" id="filterProfileEnabled" checked> enabled</label>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button onclick="applyFilterProfile()">Apply Profile</button>
+                    <button onclick="reloadFilterProfiles(true)">Reload</button>
+                    <button onclick="clearFilterProfile()">Clear</button>
+                    <button onclick="restoreFilterProfileDefault()">Restore Default</button>
+                </div>
+                <span class="record-status" id="filterProfileStatus"></span>
+                <span class="record-help">Server-persisted profiles are kept per channel/task. Active edits are guarded so status refreshes do not overwrite user changes.</span>
+            </div>
+            <div class="effects-list" id="filterProfileEffects">Loading saved profiles...</div>
         </div>
         <div class="tiny"><span style="color:#00ff87">CH0 is green</span>, <span style="color:#ffcf33">CH1 is amber</span>. The scope endpoint returns recent ring-buffer history with min/max decimation so audio peaks remain visible while the browser polls at UI speed.</div>
     </div>
@@ -669,6 +712,29 @@ const char* HTML_UI = R"html(
             <span class="record-status" id="dacWriteStatus"></span>
         </div>
         <div class="config-panel record-panel effects-panel">
+            <div style="display:flex; flex-direction:column; gap:10px; min-width:320px;">
+                <div class="pin-title" style="font-size:1.05rem;">Uploaded File Playback</div>
+                <label>Upload WAV <input type="file" id="playbackFile" accept="audio/wav,.wav"></label>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button onclick="uploadPlaybackFile()">Upload</button>
+                    <select id="playbackUploadSelect" style="min-width:220px;"></select>
+                    <button onclick="deletePlaybackUpload()">Delete</button>
+                </div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                    <label>Output <select id="playbackChannel"><option value="ch0">CH0/A</option><option value="ch1">CH1/B</option><option value="mono_both">CH0+CH1 mono</option><option value="stereo">CH0+CH1 stereo</option></select></label>
+                    <label><input type="checkbox" id="playbackUseProfiles" checked> use DAC playback profiles</label>
+                    <label>Gain <input type="number" id="playbackGain" min="0" max="4" step="0.05" value="1.0"></label>
+                    <label><input type="checkbox" id="playbackLoop"> loop</label>
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button onclick="playUploadedAudio()">Play Upload</button>
+                    <button onclick="stopUploadedAudio()">Stop Playback</button>
+                    <span class="record-status" id="playbackStatus">Idle</span>
+                </div>
+                <span class="record-help">Supports PCM16 WAV. Silence on inactive DAC channels is written as midscale 2048. Saved DAC playback filter profiles are applied when enabled.</span>
+            </div>
+        </div>
+        <div class="config-panel record-panel effects-panel">
             <div>
                 <div class="pin-title" style="font-size:1.05rem;margin-bottom:8px;">Advanced DTMF Dialer</div>
                 <div class="dtmf-pad" id="dtmfPad">
@@ -693,7 +759,7 @@ const char* HTML_UI = R"html(
                     <button onclick="backspaceDtmf()">Backspace</button>
                     <span class="record-status" id="dtmfStatus"></span>
                 </div>
-                <span class="record-help">DTMF tones are synthesized on the RP2040 firmware and sent to the MCP4922 DAC; this UI preserves unsaved edits while status polling runs.</span>
+                <span class="record-help">DTMF tones are synthesized on the RP2040 firmware using fixed 8 kHz DTMF synthesis with midpoint-biased silence and click-reducing ramps; this UI preserves unsaved edits while status polling runs.</span>
             </div>
         </div>
         <div class="tiny">MCP4922 is a dual 12-bit voltage-output DAC. Writes use 16 SPI clocks: four command bits followed by 12 data bits; SPI is unidirectional and supports modes 0,0 and 1,1. VOUT = VREF * code / 4096 * gain.</div>
@@ -1097,7 +1163,11 @@ const char* HTML_UI = R"html(
                 const pointBudget = Math.max(300, Math.min(2400, canvas.clientWidth * 2));
                 const view = document.getElementById('graphView')?.value || 'raw';
                 const effects = selectedEffectsCsv();
-                const res = await fetch(`/api/adc?points=${pointBudget}&view=${encodeURIComponent(view)}&effects=${encodeURIComponent(effects)}`);
+                const useProfiles = document.getElementById('graphUseProfiles')?.checked !== false;
+                const url = useProfiles
+                    ? `/api/adc?points=${pointBudget}&view=${encodeURIComponent(view)}`
+                    : `/api/adc?points=${pointBudget}&view=${encodeURIComponent(view)}&effects=${encodeURIComponent(effects)}`;
+                const res = await fetch(url);
                 const data = await res.json();
                 window.lastAdcData = data;
                 updateAdcHeader(data);
@@ -1302,6 +1372,124 @@ const char* HTML_UI = R"html(
             fetchStatus();
         }
 
+        let filterProfileData = null;
+        const filterProfileGuard = makeSettingsGuard(['filterProfileContext','filterProfileEnabled'], 'filterProfileStatus');
+
+        function selectedProfileEffectsCsv() {
+            return Array.from(document.querySelectorAll('#filterProfileEffects input[type="checkbox"]:checked'))
+                .map(input => input.value)
+                .join(',');
+        }
+
+        function currentFilterProfileContext() {
+            return document.getElementById('filterProfileContext')?.value || loadUiPref('filterProfileContext', 'adc.graph.ch0');
+        }
+
+        function fillFilterProfileEditor(force=false) {
+            if (!filterProfileData || !filterProfileGuard.shouldFill(force)) return;
+            const ctxSelect = document.getElementById('filterProfileContext');
+            const enabled = document.getElementById('filterProfileEnabled');
+            const effectsBox = document.getElementById('filterProfileEffects');
+            if (!ctxSelect || !enabled || !effectsBox) return;
+
+            if (!ctxSelect.options.length) {
+                for (const ctx of (filterProfileData.contexts || [])) {
+                    const opt = document.createElement('option');
+                    opt.value = ctx.id;
+                    opt.textContent = ctx.label || ctx.id;
+                    ctxSelect.appendChild(opt);
+                }
+                const savedCtx = loadUiPref('filterProfileContext', 'adc.graph.ch0');
+                if (filterProfileData.profiles?.[savedCtx]) ctxSelect.value = savedCtx;
+                ctxSelect.addEventListener('change', () => {
+                    saveUiPref('filterProfileContext', ctxSelect.value);
+                    filterProfileGuard.clearDirty('');
+                    fillFilterProfileEditor(true);
+                });
+                enabled.addEventListener('change', filterProfileGuard.markDirty);
+            }
+
+            const desiredCtx = filterProfileData.profiles?.[ctxSelect.value] ? ctxSelect.value : loadUiPref('filterProfileContext', 'adc.graph.ch0');
+            if (filterProfileData.profiles?.[desiredCtx]) ctxSelect.value = desiredCtx;
+            const ctx = ctxSelect.value || 'adc.graph.ch0';
+            const profile = filterProfileData.profiles?.[ctx] || {enabled:true, effects:[]};
+            enabled.checked = profile.enabled !== false;
+            effectsBox.innerHTML = '';
+            const selected = new Set(profile.effects || []);
+            for (const effect of (filterProfileData.effects || [])) {
+                const label = document.createElement('label');
+                label.className = `effect-item ${effect.available ? '' : 'disabled'}`;
+                label.title = effect.description || '';
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = effect.id;
+                input.disabled = !effect.available;
+                input.checked = selected.has(effect.id);
+                input.addEventListener('change', filterProfileGuard.markDirty);
+                label.appendChild(input);
+                label.appendChild(document.createTextNode(effect.label || effect.id));
+                effectsBox.appendChild(label);
+            }
+            if (force) filterProfileGuard.clearDirty('');
+        }
+
+        async function reloadFilterProfiles(force=false) {
+            const status = document.getElementById('filterProfileStatus');
+            if (status && force) status.textContent = 'Reloading profiles...';
+            try {
+                const res = await fetch('/api/audio/filter-profiles');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+                filterProfileData = data;
+                fillFilterProfileEditor(force);
+                if (status && force) status.textContent = 'Profiles reloaded';
+            } catch (err) {
+                if (status) status.textContent = `Profile load failed: ${err.message || err}`;
+            }
+        }
+
+        async function applyFilterProfile() {
+            const ctx = currentFilterProfileContext();
+            filterProfileGuard.beginApply();
+            try {
+                const body = {
+                    context: ctx,
+                    enabled: document.getElementById('filterProfileEnabled').checked,
+                    effects: selectedProfileEffectsCsv().split(',').filter(Boolean)
+                };
+                const res = await fetch('/api/audio/filter-profile', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+                if (!filterProfileData) filterProfileData = {profiles:{}};
+                if (!filterProfileData.profiles) filterProfileData.profiles = {};
+                filterProfileData.profiles[ctx] = data.profile;
+                filterProfileGuard.finishApply('Profile applied');
+                fillFilterProfileEditor(true);
+                fetchAdcScope();
+            } catch (err) { filterProfileGuard.failApply(`Failed: ${err.message || err}`); }
+        }
+
+        function clearFilterProfile() {
+            document.querySelectorAll('#filterProfileEffects input[type="checkbox"]').forEach(input => { input.checked = false; });
+            filterProfileGuard.markDirty();
+        }
+
+        async function restoreFilterProfileDefault() {
+            const ctx = currentFilterProfileContext();
+            filterProfileGuard.beginApply();
+            try {
+                const res = await fetch('/api/audio/filter-profile', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({context:ctx, action:'restore_default'})});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+                if (!filterProfileData) filterProfileData = {profiles:{}};
+                if (!filterProfileData.profiles) filterProfileData.profiles = {};
+                filterProfileData.profiles[ctx] = data.profile;
+                filterProfileGuard.finishApply('Default restored');
+                fillFilterProfileEditor(true);
+                fetchAdcScope();
+            } catch (err) { filterProfileGuard.failApply(`Failed: ${err.message || err}`); }
+        }
+
         async function loadAudioModules() {
             if (!ADC_ENABLED) return;
             try {
@@ -1350,10 +1538,14 @@ const char* HTML_UI = R"html(
             const mode = document.getElementById('wavMode');
             const codec = document.getElementById('audioCodec');
             const graph = document.getElementById('graphView');
+            const graphProfiles = document.getElementById('graphUseProfiles');
+            const wavProfiles = document.getElementById('wavUseProfiles');
             if (dur) saveUiPref('wavDuration', dur.value);
             if (mode) saveUiPref('wavMode', mode.value);
             if (codec) saveUiPref('audioCodec', codec.value);
             if (graph) saveUiPref('graphView', graph.value);
+            if (graphProfiles) saveUiPref('graphUseProfiles', graphProfiles.checked ? '1' : '0');
+            if (wavProfiles) saveUiPref('wavUseProfiles', wavProfiles.checked ? '1' : '0');
             saveUiPref('effects', selectedEffectsCsv());
         }
 
@@ -1361,10 +1553,14 @@ const char* HTML_UI = R"html(
             const dur = document.getElementById('wavDuration');
             const mode = document.getElementById('wavMode');
             const graph = document.getElementById('graphView');
+            const graphProfiles = document.getElementById('graphUseProfiles');
+            const wavProfiles = document.getElementById('wavUseProfiles');
             if (dur) dur.value = loadUiPref('wavDuration', dur.value || '1000');
             if (mode) mode.value = loadUiPref('wavMode', mode.value || 'ch0');
             if (graph) graph.value = loadUiPref('graphView', graph.value || 'raw');
-            [dur, mode, graph].forEach(el => { if (el) el.addEventListener('change', saveAudioUiPrefs); });
+            if (graphProfiles) graphProfiles.checked = loadUiPref('graphUseProfiles', '1') !== '0';
+            if (wavProfiles) wavProfiles.checked = loadUiPref('wavUseProfiles', '1') !== '0';
+            [dur, mode, graph, graphProfiles, wavProfiles].forEach(el => { if (el) el.addEventListener('change', () => { saveAudioUiPrefs(); if (el === graphProfiles) fetchAdcScope(); }); });
             if (dur) dur.addEventListener('input', saveAudioUiPrefs);
         }
 
@@ -1383,8 +1579,10 @@ const char* HTML_UI = R"html(
             const mode = modeSelect.value;
             const codec = codecSelect.value || 'pcm16';
             const effects = selectedEffectsCsv();
+            const useProfiles = document.getElementById('wavUseProfiles')?.checked !== false;
             saveAudioUiPrefs();
-            return `/api/adc/wav?ms=${encodeURIComponent(ms)}&mode=${encodeURIComponent(mode)}&codec=${encodeURIComponent(codec)}&effects=${encodeURIComponent(effects)}`;
+            const base = `/api/adc/wav?ms=${encodeURIComponent(ms)}&mode=${encodeURIComponent(mode)}&codec=${encodeURIComponent(codec)}`;
+            return useProfiles ? base : `${base}&effects=${encodeURIComponent(effects)}`;
         }
 
         async function downloadWav() {
@@ -1453,6 +1651,7 @@ const char* HTML_UI = R"html(
 
 
         const dacGuard = makeSettingsGuard(['dacConfigEnabled','dacConfigTransport','dacConfigRp2040Dev','dacConfigRate'], 'dacConfigStatus');
+        const playbackGuard = makeSettingsGuard(['playbackFile','playbackUploadSelect','playbackChannel','playbackUseProfiles','playbackGain','playbackLoop'], 'playbackStatus');
         const dtmfGuard = makeSettingsGuard(['dtmfSequence','dtmfToneMs','dtmfGapMs','dtmfAmplitude','dtmfChannel'], 'dtmfStatus');
         function wireDtmfPad() {
             dtmfGuard.wire();
@@ -1465,6 +1664,39 @@ const char* HTML_UI = R"html(
                 });
             });
         }
+        async function refreshPlaybackUploads(force=false) {
+            try {
+                const res = await fetch('/api/audio/uploads'); const data = await res.json(); if(!res.ok) throw new Error(data.error || 'failed');
+                const sel = document.getElementById('playbackUploadSelect'); if (!sel || (!force && !playbackGuard.shouldFill(false))) return;
+                const old = sel.value; sel.innerHTML = '';
+                for (const u of (data.uploads || [])) { const opt=document.createElement('option'); opt.value=u.id; opt.textContent=`${u.original_name} (${u.duration_ms||0} ms, ${u.sample_rate_hz||0} Hz, ${u.channels||0}ch)`; sel.appendChild(opt); }
+                if (old) sel.value = old;
+            } catch(err) { const st=document.getElementById('playbackStatus'); if(st) st.textContent=`Uploads error: ${err.message||err}`; }
+        }
+        async function uploadPlaybackFile() {
+            const file = document.getElementById('playbackFile').files[0]; const st=document.getElementById('playbackStatus');
+            if (!file) { st.textContent='Choose a WAV file first'; return; }
+            st.textContent='Uploading...';
+            try { const form=new FormData(); form.append('file', file); const res=await fetch('/api/audio/upload',{method:'POST',body:form}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'upload failed'); playbackGuard.clearDirty('Uploaded'); await refreshPlaybackUploads(true); document.getElementById('playbackUploadSelect').value=data.upload.id; }
+            catch(err){ playbackGuard.failApply(`Upload failed: ${err.message||err}`); }
+        }
+        async function deletePlaybackUpload() {
+            const id=document.getElementById('playbackUploadSelect').value; if(!id) return; const st=document.getElementById('playbackStatus'); st.textContent='Deleting...';
+            try { const res=await fetch('/api/audio/upload/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'delete failed'); playbackGuard.clearDirty('Deleted'); refreshPlaybackUploads(true); }
+            catch(err){ playbackGuard.failApply(`Delete failed: ${err.message||err}`); }
+        }
+        async function playUploadedAudio() {
+            const id=document.getElementById('playbackUploadSelect').value; if(!id) { document.getElementById('playbackStatus').textContent='No upload selected'; return; }
+            playbackGuard.beginApply();
+            try { const body={id,channel_mode:document.getElementById('playbackChannel').value,use_profiles:document.getElementById('playbackUseProfiles').checked,gain:parseFloat(document.getElementById('playbackGain').value||'1'),loop:document.getElementById('playbackLoop').checked}; const res=await fetch('/api/audio/playback/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'play failed'); playbackGuard.finishApply('Playing'); }
+            catch(err){ playbackGuard.failApply(`Play failed: ${err.message||err}`); }
+        }
+        async function stopUploadedAudio() { const st=document.getElementById('playbackStatus'); st.textContent='Stopping...'; try { const res=await fetch('/api/audio/playback/stop',{method:'POST'}); const data=await res.json(); if(!res.ok) throw new Error(data.error||'stop failed'); st.textContent='Stopped'; } catch(err){ st.textContent=`Stop failed: ${err.message||err}`; } }
+        async function fetchPlaybackStatus() {
+            try { const res=await fetch('/api/audio/playback/status'); const data=await res.json(); if(!res.ok) return; const p=data.playback||{}; const st=document.getElementById('playbackStatus'); if(st && !playbackGuard.focused()) st.textContent = `${p.status||'idle'} ${p.position_ms||0}/${p.duration_ms||0} ms ${p.last_error||''}`; }
+            catch(_) {}
+        }
+
         function dtmfBody() {
             return {
                 digits: document.getElementById('dtmfSequence').value || '',
@@ -1591,14 +1823,15 @@ const char* HTML_UI = R"html(
         setInterval(fetchStatus, 250);
         if (ADC_ENABLED) { setInterval(fetchAdcScope, 120); setInterval(fetchCallerId, 1000); setInterval(fetchLineState, 500); }
         setInterval(fetchTelephony, 500); setInterval(fetchTelephonyCoordinator, 500); setInterval(fetchTelephonyDiagnostics, 1500);
-        window.onload = () => { restoreSimpleUiPrefs(); selectTab(loadUiPref('activeTab', 'scope')); fetchStatus(); wireCallerIdTuneDirty(); wireSettingsGuards(); wireAdcConfigDirty(); dacGuard.wire(); wireDtmfPad(); if (ADC_ENABLED) { loadAudioModules().then(() => fetchAdcScope()); fetchCallerId(); fetchLineState(); } fetchTelephony(); fetchTelephonyCoordinator(); fetchTelephonyDiagnostics(); };
+        setInterval(fetchPlaybackStatus, 500);
+        window.onload = () => { restoreSimpleUiPrefs(); selectTab(loadUiPref('activeTab', 'scope')); fetchStatus(); wireCallerIdTuneDirty(); wireSettingsGuards(); wireAdcConfigDirty(); dacGuard.wire(); playbackGuard.wire(); filterProfileGuard.wire(); wireDtmfPad(); refreshPlaybackUploads(true); if (ADC_ENABLED) { reloadFilterProfiles(true); loadAudioModules().then(() => fetchAdcScope()); fetchCallerId(); fetchLineState(); } fetchTelephony(); fetchTelephonyCoordinator(); fetchTelephonyDiagnostics(); };
     </script>
 </body>
 </html>
 )html";
 
-WebServer::WebServer(std::map<int, std::shared_ptr<PinState>>& reg, ConfigManager& cfg, GpioManager& gpio, std::shared_ptr<SystemContext> ctx, AdcSampler* adc, DacOutput* dac, CallerIdDetector* cid, Ch1817Driver* ch1817, LineStateDetector* line_state, TelephonyCoordinator* telco, TelephonyDiagnostics* tel_diag, std::set<int> reserved) 
-    : registry(reg), config_mgr(cfg), gpio_mgr(gpio), context(ctx), adc_sampler(adc), dac_output(dac), caller_id_detector(cid), ch1817_driver(ch1817), line_state_detector(line_state), telephony_coordinator(telco), telephony_diagnostics(tel_diag), reserved_bcm_pins(std::move(reserved)) {
+WebServer::WebServer(std::map<int, std::shared_ptr<PinState>>& reg, ConfigManager& cfg, GpioManager& gpio, std::shared_ptr<SystemContext> ctx, AdcSampler* adc, DacOutput* dac, CallerIdDetector* cid, Ch1817Driver* ch1817, LineStateDetector* line_state, TelephonyCoordinator* telco, TelephonyDiagnostics* tel_diag, FilterProfileManager* profiles, AudioPlaybackService* playback, std::set<int> reserved) 
+    : registry(reg), config_mgr(cfg), gpio_mgr(gpio), context(ctx), adc_sampler(adc), dac_output(dac), caller_id_detector(cid), ch1817_driver(ch1817), line_state_detector(line_state), telephony_coordinator(telco), telephony_diagnostics(tel_diag), filter_profiles(profiles), playback_service(playback), reserved_bcm_pins(std::move(reserved)) {
     setup_routes();
 }
 
@@ -1705,8 +1938,9 @@ void WebServer::setup_routes() {
             points = requested_points == 0 ? 0 : std::max<size_t>(100, std::min<size_t>(5000, requested_points));
         }
         std::string view = req.has_param("view") ? req.get_param_value("view") : "raw";
-        std::string effects = req.has_param("effects") ? req.get_param_value("effects") : "";
-        res.set_content(serialize_adc_scope(points, view, effects), "application/json");
+        const bool effects_override = req.has_param("effects");
+        std::string effects = effects_override ? req.get_param_value("effects") : "";
+        res.set_content(serialize_adc_scope(points, view, effects, effects_override), "application/json");
     });
 
 
@@ -1726,6 +1960,57 @@ void WebServer::setup_routes() {
             return;
         }
         res.set_content(dacStatusJson(dac_output->status()).dump(), "application/json");
+    });
+
+    svr.Get("/api/audio/uploads", [this](const httplib::Request&, httplib::Response& res) {
+        if (!playback_service) { res.status = 404; res.set_content(json{{"status","error"},{"error","Playback service not configured"}}.dump(), "application/json"); return; }
+        res.set_content(playback_service->listUploads().dump(), "application/json");
+    });
+
+    svr.Post("/api/audio/upload", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!playback_service) { res.status = 404; res.set_content(json{{"status","error"},{"error","Playback service not configured"}}.dump(), "application/json"); return; }
+        try {
+            std::string filename = req.has_param("filename") ? req.get_param_value("filename") : "upload.wav";
+            std::string content;
+            if (req.is_multipart_form_data() && req.form.has_file("file")) {
+                auto file = req.form.get_file("file");
+                filename = file.filename.empty() ? filename : file.filename;
+                content = file.content;
+            } else content = req.body;
+            auto meta = playback_service->saveUpload(filename, content);
+            res.set_content(json{{"status", "ok"}, {"upload", meta}}.dump(), "application/json");
+        } catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
+    });
+
+    svr.Post("/api/audio/upload/delete", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!playback_service) { res.status = 404; res.set_content(json{{"status","error"},{"error","Playback service not configured"}}.dump(), "application/json"); return; }
+        try { json j = json::parse(req.body.empty() ? "{}" : req.body); res.set_content(playback_service->deleteUpload(j.value("id", "")).dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
+    });
+
+    svr.Get("/api/audio/playback/status", [this](const httplib::Request&, httplib::Response& res) {
+        if (!playback_service) { res.status = 404; res.set_content(json{{"status","error"},{"error","Playback service not configured"}}.dump(), "application/json"); return; }
+        res.set_content(playback_service->status().dump(), "application/json");
+    });
+
+    svr.Post("/api/audio/playback/play", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!playback_service) { res.status = 404; res.set_content(json{{"status","error"},{"error","Playback service not configured"}}.dump(), "application/json"); return; }
+        try {
+            json j = json::parse(req.body.empty() ? "{}" : req.body);
+            AudioPlaybackService::PlaybackRequest pr;
+            pr.id = j.value("id", "");
+            pr.channel_mode = j.value("channel_mode", std::string("ch0"));
+            pr.use_profiles = j.value("use_profiles", true);
+            pr.loop = j.value("loop", false);
+            pr.gain = j.value("gain", 1.0);
+            if (j.contains("effects") && j["effects"].is_array()) for (const auto& e : j["effects"]) if (e.is_string()) pr.effects.push_back(e.get<std::string>());
+            res.set_content(playback_service->play(pr).dump(), "application/json");
+        } catch (const std::exception& e) { res.status = 400; res.set_content(json{{"status","error"},{"error",e.what()}}.dump(), "application/json"); }
+    });
+
+    svr.Post("/api/audio/playback/stop", [this](const httplib::Request&, httplib::Response& res) {
+        if (!playback_service) { res.status = 404; res.set_content(json{{"status","error"},{"error","Playback service not configured"}}.dump(), "application/json"); return; }
+        res.set_content(playback_service->stop().dump(), "application/json");
     });
 
     svr.Post("/api/dac/config", [this](const httplib::Request& req, httplib::Response& res) {
@@ -1988,6 +2273,59 @@ void WebServer::setup_routes() {
         res.set_content(AudioProcessing::catalog().dump(), "application/json");
     });
 
+    svr.Get("/api/audio/filter-profiles", [this](const httplib::Request&, httplib::Response& res) {
+        if (!filter_profiles) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "Filter profile manager not configured"}}.dump(), "application/json");
+            return;
+        }
+        json catalog = AudioProcessing::catalog();
+        json out = {{"status", "ok"},
+                    {"effects", catalog.value("effects", json::array())},
+                    {"codecs", catalog.value("codecs", json::array())},
+                    {"contexts", filter_profiles->contextsJson()},
+                    {"defaults", filter_profiles->defaultsJson()},
+                    {"profiles", filter_profiles->allProfilesJson()}};
+        res.set_content(out.dump(), "application/json");
+    });
+
+    svr.Get("/api/audio/filter-profile", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!filter_profiles) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "Filter profile manager not configured"}}.dump(), "application/json");
+            return;
+        }
+        try {
+            std::string ctx = req.has_param("context") ? req.get_param_value("context") : "";
+            if (ctx.empty()) throw std::runtime_error("Missing context query parameter");
+            res.set_content(json{{"status", "ok"}, {"profile", filter_profiles->profileJson(ctx)}}.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"status", "error"}, {"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
+    svr.Post("/api/audio/filter-profile", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!filter_profiles) {
+            res.status = 404;
+            res.set_content(json{{"status", "error"}, {"error", "Filter profile manager not configured"}}.dump(), "application/json");
+            return;
+        }
+        try {
+            json j = json::parse(req.body.empty() ? "{}" : req.body);
+            std::string action = j.value("action", "update");
+            std::string ctx = j.value("context", "");
+            if (ctx.empty()) throw std::runtime_error("Missing filter profile context");
+            FilterProfileManager::Profile p;
+            if (action == "restore_default") p = filter_profiles->restoreDefault(ctx);
+            else p = filter_profiles->updateProfileFromJson(j);
+            res.set_content(json{{"status", "ok"}, {"context", ctx}, {"profile", FilterProfileManager::profileToJson(p)}}.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"status", "error"}, {"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
     svr.Get("/api/adc/wav", [this](const httplib::Request& req, httplib::Response& res) {
         if (!adc_sampler || !adc_sampler->isEnabled()) {
             res.status = 404;
@@ -2005,6 +2343,10 @@ void WebServer::setup_routes() {
 
         std::string mode = req.has_param("mode") ? req.get_param_value("mode") : "ch0";
         std::string effects = req.has_param("effects") ? req.get_param_value("effects") : "";
+        if (!req.has_param("effects") && filter_profiles) {
+            std::string profile = req.has_param("profile") ? req.get_param_value("profile") : wavProfileContextForMode(mode);
+            effects = joinEffectsCsv(filter_profiles->effectiveEffects(profile));
+        }
         std::string codec = req.has_param("codec") ? req.get_param_value("codec") : "pcm16";
         std::string filename;
         std::string content_type;
@@ -2095,7 +2437,7 @@ std::string WebServer::serialize_state() {
     return j.dump();
 }
 
-std::string WebServer::serialize_adc_scope(size_t max_points, const std::string& view, const std::string& effects_csv) {
+std::string WebServer::serialize_adc_scope(size_t max_points, const std::string& view, const std::string& effects_csv, bool effects_override) {
     json j;
     if (!adc_sampler) {
         j = {
@@ -2160,10 +2502,19 @@ std::string WebServer::serialize_adc_scope(size_t max_points, const std::string&
     j["available_history_ms"] = (static_cast<uint64_t>(s.valid_samples) * 1000ull) / std::max<uint32_t>(1, sr);
     j["history_capacity_ms"] = (static_cast<uint64_t>(s.history_capacity_samples) * 1000ull) / std::max<uint32_t>(1, sr);
     j["last_error"] = s.last_error;
+    std::string effects0 = effects_csv;
+    std::string effects1 = effects_csv;
+    if (!effects_override && filter_profiles) {
+        effects0 = joinEffectsCsv(filter_profiles->effectiveEffects("adc.graph.ch0"));
+        effects1 = joinEffectsCsv(filter_profiles->effectiveEffects("adc.graph.ch1"));
+    }
+    const std::string graph_effects = (effects0 == effects1) ? effects0 : ("ch0:" + effects0 + "|ch1:" + effects1);
     j["graph_view"] = safe_view;
-    j["graph_effects"] = effects_csv;
+    j["graph_effects"] = graph_effects;
+    j["graph_effects_override"] = effects_override;
+    j["graph_filter_profiles"] = {{"ch0", "adc.graph.ch0"}, {"ch1", "adc.graph.ch1"}};
     json skipped = json::array();
-    for (const auto& effect : splitEffectsCsv(effects_csv)) {
+    for (const auto& effect : splitEffectsCsv(effects0 + "," + effects1)) {
         if (effect == "rnnoise") skipped.push_back("rnnoise");
     }
     j["graph_skipped_effects"] = skipped;
@@ -2171,8 +2522,8 @@ std::string WebServer::serialize_adc_scope(size_t max_points, const std::string&
     if (safe_view == "raw") {
         j["samples"] = {{"ch0", s.samples[0]}, {"ch1", s.samples[1]}};
     } else {
-        auto f0 = applyGraphEffectsToChannel(s.samples[0], sr, effects_csv);
-        auto f1 = applyGraphEffectsToChannel(s.samples[1], sr, effects_csv);
+        auto f0 = applyGraphEffectsToChannel(s.samples[0], sr, effects0);
+        auto f1 = applyGraphEffectsToChannel(s.samples[1], sr, effects1);
         if (safe_view == "filtered") {
             j["samples"] = {{"ch0", f0}, {"ch1", f1}};
         } else {

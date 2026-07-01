@@ -139,6 +139,11 @@ static uint16_t dac_last_b = 0;
 #define DTMF_PHASE_IDLE 0u
 #define DTMF_PHASE_TONE 1u
 #define DTMF_PHASE_GAP  2u
+#define DTMF_SAMPLE_RATE_HZ 8000u
+#define DTMF_SAMPLE_PERIOD_US 125u
+#define DTMF_RAMP_MS 5u
+#define DTMF_RAMP_SAMPLES ((DTMF_SAMPLE_RATE_HZ * DTMF_RAMP_MS) / 1000u)
+#define DTMF_SILENCE_CODE 2048u
 
 static volatile bool dtmf_active = false;
 static char dtmf_digits[DTMF_MAX_DIGITS];
@@ -149,13 +154,15 @@ static uint16_t dtmf_tone_ms = 100;
 static uint16_t dtmf_gap_ms = 50;
 static uint16_t dtmf_amplitude = 1200;
 static uint8_t dtmf_channel_mask = GW_DAC_CHANNEL_A;
-static uint32_t dtmf_phase_until_ms = 0;
 static uint32_t dtmf_next_sample_us = 0;
 static uint32_t dtmf_generated_frames = 0;
-static float dtmf_phase_row = 0.0f;
-static float dtmf_phase_col = 0.0f;
-static float dtmf_inc_row = 0.0f;
-static float dtmf_inc_col = 0.0f;
+static uint32_t dtmf_phase_samples_done = 0;
+static uint32_t dtmf_tone_samples_total = 0;
+static uint32_t dtmf_gap_samples_total = 0;
+static uint32_t dtmf_phase_row = 0;
+static uint32_t dtmf_phase_col = 0;
+static uint32_t dtmf_inc_row = 0;
+static uint32_t dtmf_inc_col = 0;
 
 static inline void adc_cs_select(void) { gpio_put(MCU_ADC_PIN_CS, 0); __asm volatile("nop\n nop\n nop\n"); }
 static inline void adc_cs_deselect(void) { gpio_put(MCU_ADC_PIN_CS, 1); sleep_us(1); }
@@ -252,25 +259,30 @@ static bool dtmf_digit_freqs(char d, float *row, float *col) {
     }
 }
 
+static uint32_t dtmf_phase_inc(float hz) {
+    const double scale = 4294967296.0; // 2^32
+    return (uint32_t)((double)hz * scale / (double)DTMF_SAMPLE_RATE_HZ + 0.5);
+}
+
 static void dtmf_prepare_digit(void) {
     float row = 0.0f, col = 0.0f;
     if (dtmf_index >= dtmf_digit_count || !dtmf_digit_freqs(dtmf_digits[dtmf_index], &row, &col)) {
-        dtmf_active = false; dtmf_phase = DTMF_PHASE_IDLE; mcp4922_write_pair(0, 0); return;
+        dtmf_active = false; dtmf_phase = DTMF_PHASE_IDLE; mcp4922_write_pair(DTMF_SILENCE_CODE, DTMF_SILENCE_CODE); return;
     }
-    const float two_pi = 6.2831853071795864769f;
-    uint32_t rate = dac_sample_rate ? dac_sample_rate : MCU_DAC_DEFAULT_RATE_HZ;
-    dtmf_phase_row = 0.0f; dtmf_phase_col = 0.0f;
-    dtmf_inc_row = two_pi * row / (float)rate;
-    dtmf_inc_col = two_pi * col / (float)rate;
-    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    dtmf_phase_row = 0; dtmf_phase_col = 0;
+    dtmf_inc_row = dtmf_phase_inc(row);
+    dtmf_inc_col = dtmf_phase_inc(col);
+    dtmf_tone_samples_total = ((uint32_t)dtmf_tone_ms * DTMF_SAMPLE_RATE_HZ + 999u) / 1000u;
+    if (dtmf_tone_samples_total < 1u) dtmf_tone_samples_total = 1u;
+    dtmf_gap_samples_total = ((uint32_t)dtmf_gap_ms * DTMF_SAMPLE_RATE_HZ + 999u) / 1000u;
+    dtmf_phase_samples_done = 0;
     dtmf_phase = DTMF_PHASE_TONE;
-    dtmf_phase_until_ms = now_ms + dtmf_tone_ms;
     dtmf_next_sample_us = to_us_since_boot(get_absolute_time());
 }
 
 static void dtmf_stop(void) {
     dtmf_active = false; dtmf_phase = DTMF_PHASE_IDLE; dtmf_index = 0; dtmf_digit_count = 0;
-    mcp4922_write_pair(0, 0);
+    mcp4922_write_pair(DTMF_SILENCE_CODE, DTMF_SILENCE_CODE);
 }
 
 static uint16_t dtmf_start(const gw_dtmf_play_payload_t *p) {
@@ -298,33 +310,45 @@ static uint16_t dtmf_start(const gw_dtmf_play_payload_t *p) {
 static void dtmf_tick(void) {
 #if MCU_DAC_ENABLE
     if (!dtmf_active) return;
-    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
-    if (dtmf_phase == DTMF_PHASE_TONE && now_ms >= dtmf_phase_until_ms) {
-        mcp4922_write_pair(0, 0);
-        if (dtmf_gap_ms == 0) { dtmf_index++; dtmf_prepare_digit(); return; }
-        dtmf_phase = DTMF_PHASE_GAP; dtmf_phase_until_ms = now_ms + dtmf_gap_ms;
-        return;
-    }
-    if (dtmf_phase == DTMF_PHASE_GAP && now_ms >= dtmf_phase_until_ms) {
-        dtmf_index++;
-        if (dtmf_index >= dtmf_digit_count) { dtmf_stop(); return; }
-        dtmf_prepare_digit(); return;
-    }
-    if (dtmf_phase != DTMF_PHASE_TONE) return;
     uint32_t now_us = to_us_since_boot(get_absolute_time());
-    uint32_t rate = dac_sample_rate ? dac_sample_rate : MCU_DAC_DEFAULT_RATE_HZ;
-    uint32_t period_us = 1000000u / rate; if (!period_us) period_us = 1;
-    int budget = 8;
-    while ((int32_t)(now_us - dtmf_next_sample_us) >= 0 && budget-- > 0 && dtmf_active && dtmf_phase == DTMF_PHASE_TONE) {
-        float y = (sinf(dtmf_phase_row) + sinf(dtmf_phase_col)) * 0.5f;
-        int32_t centered = 2048 + (int32_t)(y * (float)dtmf_amplitude);
-        if (centered < 0) centered = 0; if (centered > 4095) centered = 4095;
-        uint16_t a = (dtmf_channel_mask & GW_DAC_CHANNEL_A) ? (uint16_t)centered : 0;
-        uint16_t b = (dtmf_channel_mask & GW_DAC_CHANNEL_B) ? (uint16_t)centered : 0;
-        mcp4922_write_pair(a, b);
-        dtmf_phase_row += dtmf_inc_row; if (dtmf_phase_row >= 6.2831853f) dtmf_phase_row -= 6.2831853f;
-        dtmf_phase_col += dtmf_inc_col; if (dtmf_phase_col >= 6.2831853f) dtmf_phase_col -= 6.2831853f;
-        dtmf_next_sample_us += period_us; dtmf_generated_frames++;
+    int budget = 16;
+    while ((int32_t)(now_us - dtmf_next_sample_us) >= 0 && budget-- > 0 && dtmf_active) {
+        if (dtmf_phase == DTMF_PHASE_TONE) {
+            float env = 1.0f;
+            const uint32_t ramp = DTMF_RAMP_SAMPLES ? DTMF_RAMP_SAMPLES : 1u;
+            if (dtmf_phase_samples_done < ramp) env = (float)dtmf_phase_samples_done / (float)ramp;
+            uint32_t remaining = (dtmf_tone_samples_total > dtmf_phase_samples_done) ? (dtmf_tone_samples_total - dtmf_phase_samples_done) : 0u;
+            if (remaining < ramp) env = fminf(env, (float)remaining / (float)ramp);
+            const float two_pi = 6.2831853071795864769f;
+            float row = sinf(((float)dtmf_phase_row / 4294967296.0f) * two_pi);
+            float col = sinf(((float)dtmf_phase_col / 4294967296.0f) * two_pi);
+            float y = (row * 0.5f + col * 0.5f) * env;
+            int32_t centered = (int32_t)DTMF_SILENCE_CODE + (int32_t)(y * (float)dtmf_amplitude);
+            if (centered < 0) centered = 0; if (centered > 4095) centered = 4095;
+            uint16_t a = (dtmf_channel_mask & GW_DAC_CHANNEL_A) ? (uint16_t)centered : DTMF_SILENCE_CODE;
+            uint16_t b = (dtmf_channel_mask & GW_DAC_CHANNEL_B) ? (uint16_t)centered : DTMF_SILENCE_CODE;
+            mcp4922_write_pair(a, b);
+            dtmf_phase_row += dtmf_inc_row;
+            dtmf_phase_col += dtmf_inc_col;
+            dtmf_phase_samples_done++;
+            dtmf_generated_frames++;
+            if (dtmf_phase_samples_done >= dtmf_tone_samples_total) {
+                mcp4922_write_pair(DTMF_SILENCE_CODE, DTMF_SILENCE_CODE);
+                if (dtmf_gap_samples_total == 0) { dtmf_index++; dtmf_prepare_digit(); }
+                else { dtmf_phase = DTMF_PHASE_GAP; dtmf_phase_samples_done = 0; }
+            }
+        } else if (dtmf_phase == DTMF_PHASE_GAP) {
+            mcp4922_write_pair(DTMF_SILENCE_CODE, DTMF_SILENCE_CODE);
+            dtmf_phase_samples_done++;
+            if (dtmf_phase_samples_done >= dtmf_gap_samples_total) {
+                dtmf_index++;
+                if (dtmf_index >= dtmf_digit_count) dtmf_stop();
+                else dtmf_prepare_digit();
+            }
+        } else {
+            dtmf_stop();
+        }
+        dtmf_next_sample_us += DTMF_SAMPLE_PERIOD_US;
     }
 #endif
 }
@@ -333,7 +357,9 @@ static void send_dtmf_status(void) {
     gw_dtmf_status_payload_t st = {0};
     st.active = dtmf_active ? 1 : 0; st.channel_mask = dtmf_channel_mask; st.current_index = dtmf_index; st.digit_count = dtmf_digit_count;
     st.current_digit = (dtmf_index < dtmf_digit_count) ? dtmf_digits[dtmf_index] : 0; st.phase = dtmf_phase;
-    uint32_t now_ms = to_ms_since_boot(get_absolute_time()); st.remaining_ms = (dtmf_phase_until_ms > now_ms) ? (uint16_t)(dtmf_phase_until_ms - now_ms) : 0;
+    uint32_t total = (dtmf_phase == DTMF_PHASE_TONE) ? dtmf_tone_samples_total : (dtmf_phase == DTMF_PHASE_GAP ? dtmf_gap_samples_total : 0u);
+    uint32_t remain_samples = (total > dtmf_phase_samples_done) ? (total - dtmf_phase_samples_done) : 0u;
+    st.remaining_ms = (uint16_t)((remain_samples * 1000u) / DTMF_SAMPLE_RATE_HZ);
     st.generated_frames = dtmf_generated_frames;
     write_packet(GW_MSG_STATUS, GW_STREAM_DAC0, &st, sizeof(st));
 }

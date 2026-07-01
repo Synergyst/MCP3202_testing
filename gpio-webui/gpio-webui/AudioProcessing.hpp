@@ -1,15 +1,10 @@
 #pragma once
 
-#include <cstdint>
+#include "libs/audio_filters/AudioFilters.hpp"
+
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
-
-struct AudioBuffer {
-    uint32_t sample_rate_hz = 8000;
-    uint16_t channels = 1;
-    std::vector<int16_t> samples; // interleaved signed 16-bit PCM
-};
 
 struct AudioProcessOptions {
     std::vector<std::string> effects;

@@ -2,6 +2,7 @@
 
 #include "AdcSampler.hpp"
 #include "SystemContext.hpp"
+#include "FilterProfileManager.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -50,12 +51,14 @@ struct CallerIdSnapshot {
     std::string best_update;
     std::string last_update;
     std::string last_error;
+    std::string filter_profile;
+    std::vector<std::string> filter_effects;
     CallerIdSettings settings;
 };
 
 class CallerIdDetector {
 public:
-    CallerIdDetector(AdcSampler* sampler, std::shared_ptr<SystemContext> context);
+    CallerIdDetector(AdcSampler* sampler, std::shared_ptr<SystemContext> context, FilterProfileManager* filter_profiles = nullptr);
     ~CallerIdDetector();
 
     CallerIdDetector(const CallerIdDetector&) = delete;
@@ -85,6 +88,8 @@ public:
         std::string raw_bits;
         std::string raw_bytes_hex;
         std::vector<uint8_t> bytes;
+        std::string filter_profile;
+        std::vector<std::string> filter_effects;
     };
 
 private:
@@ -102,6 +107,7 @@ private:
 
     AdcSampler* sampler_ = nullptr;
     std::shared_ptr<SystemContext> context_;
+    FilterProfileManager* filter_profiles_ = nullptr;
     mutable std::mutex mtx_;
     CallerIdSnapshot state_;
     CallerIdSettings settings_;

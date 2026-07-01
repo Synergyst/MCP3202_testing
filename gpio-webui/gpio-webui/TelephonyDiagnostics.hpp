@@ -6,6 +6,7 @@
 #include "SignalProcessing.hpp"
 #include "SystemContext.hpp"
 #include "TelephonyCoordinator.hpp"
+#include "FilterProfileManager.hpp"
 
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -29,7 +30,8 @@ public:
                          AdcSampler* adc_sampler,
                          Ch1817Driver* ch1817_driver,
                          LineStateDetector* line_state_detector,
-                         TelephonyCoordinator* telephony_coordinator);
+                         TelephonyCoordinator* telephony_coordinator,
+                         FilterProfileManager* filter_profiles = nullptr);
 
     TelephonyCalibrationSettings calibrationSettings() const;
     nlohmann::json calibrationSettingsJson() const;
@@ -63,5 +65,6 @@ private:
     Ch1817Driver* ch1817_driver_ = nullptr;
     LineStateDetector* line_state_detector_ = nullptr;
     TelephonyCoordinator* telephony_coordinator_ = nullptr;
+    FilterProfileManager* filter_profiles_ = nullptr;
     mutable TelephonyCalibrationSettings calibration_;
 };
